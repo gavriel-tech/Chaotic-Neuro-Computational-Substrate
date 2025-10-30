@@ -1,0 +1,57 @@
+[tool.poetry]
+name = "gmcs"
+version = "1.0.0"
+description = "Generative Chaotic-Neuro Cymatics System - Real-time audio-reactive simulation"
+authors = ["GMCS Team"]
+readme = "README.md"
+license = "MIT"
+
+[tool.poetry.dependencies]
+python = "^3.10"
+jax = {extras = ["cuda11_pip"], version = "^0.4.20", source = "jax-cuda"}
+jaxlib = {version = "^0.4.20", source = "jax-cuda"}
+flax = "^0.7.5"
+fastapi = "^0.104.1"
+uvicorn = {extras = ["standard"], version = "^0.24.0"}
+websockets = "^12.0"
+sounddevice = "^0.4.6"
+librosa = "^0.10.1"
+numpy = "^1.26.0"
+scipy = "^1.11.4"
+python-multipart = "^0.0.6"
+pydantic = "^2.5.0"
+equinox = "^0.11.3"
+jaxtyping = "^0.2.25"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.4.3"
+pytest-asyncio = "^0.21.1"
+black = "^23.11.0"
+flake8 = "^6.1.0"
+mypy = "^1.7.0"
+httpx = "^0.25.2"
+
+[[tool.poetry.source]]
+name = "jax-cuda"
+url = "https://storage.googleapis.com/jax-releases/jax_cuda_releases.html"
+priority = "explicit"
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+python_files = "test_*.py"
+
+[tool.black]
+line-length = 100
+target-version = ['py310']
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+

@@ -8,9 +8,9 @@ A GPU-accelerated platform for chaotic-neuro computation, real-time audio-reacti
 
 License: MIT | Python 3.10+ | JAX GPU Accelerated | Next.js 14 | THRML Integrated
 
-**Status:** Active development. THRML-backed simulation, node graph, and benchmarking pipelines are operational. Current focus: broadening node coverage, polishing advanced THRML controls, and production hardening.
+**Status:** Active development. Core architecture is implemented with 75+ nodes, 16+ presets, ML framework integration, and comprehensive APIs. Currently working on troublshooting simulation functionality, node validation, preset validation, model training, and production infrastructure.
 
-**Codebase size:** ~78K LOC (≈52K Python backend, ≈27K TypeScript/React frontend, excluding vendored docs)
+**Codebase:** 78,577+ lines of code (51,624+ Python backend + 26,953+ TypeScript/JavaScript frontend)
 
 ---
 

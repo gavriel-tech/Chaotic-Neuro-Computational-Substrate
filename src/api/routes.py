@@ -5,7 +5,13 @@ Defines Pydantic models and endpoint handlers for adding, updating, and removing
 """
 
 from typing import List, Dict, Optional
-from pydantic import BaseModel, Field, validator
+from pydantic import (
+    BaseModel,
+    Field,
+    ConfigDict,
+    ValidationInfo,
+    field_validator,
+)
 import jax.numpy as jnp
 
 from src.core.state import N_MAX, GRID_W, GRID_H, MAX_CHAIN_LEN
@@ -32,43 +38,8 @@ class AddNodeRequest(BaseModel):
     config: Optional[Dict[str, float]] = Field(default_factory=dict, description="GMCS parameter overrides")
     chain: Optional[List[int]] = Field(default_factory=list, description="Algorithm chain IDs")
     initial_perturbation: float = Field(default=0.1, ge=-1.0, le=1.0, description="Initial oscillator x value")
-    
-    @validator('position')
-    def validate_position(cls, v):
-        """Validate position is within grid bounds."""
-        x, y = v
-        if not (0 <= x <= GRID_W):
-            raise ValueError(f"x position {x} must be in range [0, {GRID_W}]")
-        if not (0 <= y <= GRID_H):
-            raise ValueError(f"y position {y} must be in range [0, {GRID_H}]")
-        return v
-    
-    @validator('chain')
-    def validate_chain(cls, v):
-        """Validate algorithm chain."""
-        if len(v) > MAX_CHAIN_LEN:
-            raise ValueError(f"Chain length {len(v)} exceeds maximum {MAX_CHAIN_LEN}")
-        
-        # Validate algorithm IDs (all 21 algorithms)
-        valid_ids = {
-            # Basic (0-6)
-            ALGO_NOP, ALGO_LIMITER, ALGO_COMPRESSOR, ALGO_EXPANDER,
-            ALGO_THRESHOLD, ALGO_PHASEMOD, ALGO_FOLD,
-            # Audio/Signal (7-13)
-            ALGO_RESONATOR, ALGO_HILBERT, ALGO_RECTIFIER, ALGO_QUANTIZER,
-            ALGO_SLEW_LIMITER, ALGO_CROSS_MOD, ALGO_BIPOLAR_FOLD,
-            # Photonic (14-20)
-            ALGO_OPTICAL_KERR, ALGO_ELECTRO_OPTIC, ALGO_OPTICAL_SWITCH,
-            ALGO_FOUR_WAVE_MIXING, ALGO_RAMAN_AMPLIFIER, ALGO_SATURATION, ALGO_OPTICAL_GAIN
-        }
-        for algo_id in v:
-            if algo_id not in valid_ids:
-                raise ValueError(f"Invalid algorithm ID: {algo_id}")
-        
-        return v
-    
-    class Config:
-        schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "position": [128.0, 128.0],
                 "config": {
@@ -80,7 +51,30 @@ class AddNodeRequest(BaseModel):
                 "initial_perturbation": 0.1
             }
         }
-
+    )
+    
+    @field_validator('position')
+    def validate_position(cls, v):
+        """Validate position is within grid bounds."""
+        x, y = v
+        if not (0 <= x <= GRID_W):
+            raise ValueError(f"x position {x} must be in range [0, {GRID_W}]")
+        if not (0 <= y <= GRID_H):
+            raise ValueError(f"y position {y} must be in range [0, {GRID_H}]")
+        return v
+    
+    @field_validator('chain')
+    def validate_chain(cls, v):
+        """Validate algorithm chain."""
+        if len(v) > MAX_CHAIN_LEN:
+            raise ValueError(f"Chain length {len(v)} exceeds maximum {MAX_CHAIN_LEN}")
+        
+        for algo_id in v:
+            if algo_id not in VALID_ALGORITHM_IDS:
+                raise ValueError(f"Invalid algorithm ID: {algo_id}")
+        
+        return v
+    
 
 class UpdateNodeRequest(BaseModel):
     """Request to update existing nodes."""
@@ -88,15 +82,28 @@ class UpdateNodeRequest(BaseModel):
     config_updates: Optional[Dict[str, float]] = Field(default_factory=dict, description="Parameter updates")
     chain_update: Optional[List[int]] = Field(default=None, description="New algorithm chain")
     position_update: Optional[List[float]] = Field(default=None, description="New [x, y] position")
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "node_ids": [0, 1, 2],
+                "config_updates": {
+                    "A_max": 1.0,
+                    "Phi": 0.5
+                },
+                "chain_update": [1, 2, 6]
+            }
+        }
+    )
     
-    @validator('node_ids', each_item=True)
-    def validate_node_id(cls, v):
-        """Validate node ID is in valid range."""
-        if not (0 <= v < N_MAX):
-            raise ValueError(f"Node ID {v} must be in range [0, {N_MAX})")
+    @field_validator('node_ids')
+    def validate_node_ids(cls, v):
+        """Validate node IDs are in valid range."""
+        for node_id in v:
+            if not (0 <= node_id < N_MAX):
+                raise ValueError(f"Node ID {node_id} must be in range [0, {N_MAX})")
         return v
     
-    @validator('chain_update')
+    @field_validator('chain_update')
     def validate_chain(cls, v):
         """Validate algorithm chain if provided."""
         if v is None:
@@ -105,15 +112,13 @@ class UpdateNodeRequest(BaseModel):
         if len(v) > MAX_CHAIN_LEN:
             raise ValueError(f"Chain length {len(v)} exceeds maximum {MAX_CHAIN_LEN}")
         
-        valid_ids = {ALGO_NOP, ALGO_LIMITER, ALGO_COMPRESSOR, ALGO_EXPANDER,
-                     ALGO_THRESHOLD, ALGO_PHASEMOD, ALGO_FOLD}
         for algo_id in v:
-            if algo_id not in valid_ids:
+            if algo_id not in VALID_ALGORITHM_IDS:
                 raise ValueError(f"Invalid algorithm ID: {algo_id}")
         
         return v
     
-    @validator('position_update')
+    @field_validator('position_update')
     def validate_position(cls, v):
         """Validate position if provided."""
         if v is None:
@@ -128,18 +133,6 @@ class UpdateNodeRequest(BaseModel):
         if not (0 <= y <= GRID_H):
             raise ValueError(f"y position {y} must be in range [0, {GRID_H}]")
         return v
-    
-    class Config:
-        schema_extra = {
-            "example": {
-                "node_ids": [0, 1, 2],
-                "config_updates": {
-                    "A_max": 1.0,
-                    "Phi": 0.5
-                },
-                "chain_update": [1, 2, 6]
-            }
-        }
 
 
 class NodeResponse(BaseModel):
@@ -169,6 +162,21 @@ class NodeInfoResponse(BaseModel):
     chain: List[int]
 
 
+class NodeListItem(BaseModel):
+    """Summary information for an active node."""
+    node_id: int
+    active: bool
+    position: List[float]
+    oscillator_state: List[float]
+    config: Dict[str, float]
+    chain: List[int]
+
+
+class NodeListResponse(BaseModel):
+    """Response containing all active nodes."""
+    nodes: List[NodeListItem]
+
+
 # ============================================================================
 # Default Parameter Values
 # ============================================================================
@@ -183,6 +191,19 @@ DEFAULT_GMCS_PARAMS = {
     'omega': 1.0,
     'gamma': 1.0,
     'beta': 1.0,
+}
+
+
+VALID_ALGORITHM_IDS = {
+    # Basic (0-6)
+    ALGO_NOP, ALGO_LIMITER, ALGO_COMPRESSOR, ALGO_EXPANDER,
+    ALGO_THRESHOLD, ALGO_PHASEMOD, ALGO_FOLD,
+    # Audio/Signal (7-13)
+    ALGO_RESONATOR, ALGO_HILBERT, ALGO_RECTIFIER, ALGO_QUANTIZER,
+    ALGO_SLEW_LIMITER, ALGO_CROSS_MOD, ALGO_BIPOLAR_FOLD,
+    # Photonic (14-20)
+    ALGO_OPTICAL_KERR, ALGO_ELECTRO_OPTIC, ALGO_OPTICAL_SWITCH,
+    ALGO_FOUR_WAVE_MIXING, ALGO_RAMAN_AMPLIFIER, ALGO_SATURATION, ALGO_OPTICAL_GAIN,
 }
 
 
@@ -294,7 +315,7 @@ class THRMLHeterogeneousRequest(BaseModel):
     """Request to configure heterogeneous THRML model."""
     node_types: List[int] = Field(..., description="Node type IDs (0=Spin, 1=Continuous, 2=Discrete)")
     
-    @validator('node_types')
+    @field_validator('node_types')
     def validate_node_types(cls, v):
         """Validate node types."""
         for node_type in v:
@@ -308,10 +329,10 @@ class THRMLClampNodesRequest(BaseModel):
     node_ids: List[int] = Field(..., description="Node IDs to clamp")
     values: List[float] = Field(..., description="Values to clamp to")
     
-    @validator('values')
-    def validate_values_length(cls, v, values):
+    @field_validator('values')
+    def validate_values_length(cls, v, info: ValidationInfo):
         """Validate values length matches node_ids."""
-        node_ids = values.get('node_ids', [])
+        node_ids = info.data.get('node_ids', []) if info.data else []
         if len(v) != len(node_ids):
             raise ValueError("Length of values must match length of node_ids")
         return v

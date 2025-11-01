@@ -1,0 +1,32 @@
+{
+  "id": "music_analysis",
+  "name": "Music Analysis & Pattern Recognition",
+  "version": "1.0",
+  "description": "Deep analysis of musical structure using FFT, pattern recognition, and transformer models. Identifies genres, moods, key signatures, chord progressions, and rhythmic patterns in real-time.",
+  "category": "Creative",
+  "tags": ["music", "analysis", "ml", "pattern-recognition", "audio"],
+  "author": "GMCS Team",
+  "created": "2025-10-31",
+  
+  "nodes": [
+    {"id": "audio_in", "type": "input", "name": "Audio Input", "position": {"x": 100, "y": 300}, "config": {"source": "file", "sample_rate": 48000}},
+    {"id": "fft", "type": "analysis", "name": "FFT Analyzer", "position": {"x": 300, "y": 200}, "config": {"size": 4096, "window": "hann"}},
+    {"id": "pattern_rec", "type": "analysis", "name": "Pattern Recognizer", "position": {"x": 300, "y": 400}, "config": {"window_size": 960, "threshold": 0.75}},
+    {"id": "transformer", "type": "ml", "name": "Music Transformer", "position": {"x": 550, "y": 300}, "config": {"type": "Transformer Encoder", "model_name": "music-bert", "hidden_size": 512}},
+    {"id": "genre_classifier", "type": "ml", "name": "Genre Classifier", "position": {"x": 800, "y": 200}, "config": {"type": "CNN Classifier", "output_classes": 10, "class_names": ["rock", "jazz", "classical", "electronic", "hip-hop", "pop", "metal", "country", "blues", "ambient"]}},
+    {"id": "chord_detector", "type": "processor", "name": "Chord Detector", "position": {"x": 800, "y": 400}, "config": {"method": "chromagram", "root_detection": true}},
+    {"id": "viz_spectrum", "type": "visualizer", "name": "Spectrogram", "position": {"x": 300, "y": 600}, "config": {"type": "Spectrogram", "active": true}},
+    {"id": "viz_structure", "type": "visualizer", "name": "Musical Structure", "position": {"x": 800, "y": 600}, "config": {"type": "Time Series", "signals": ["genre_probs", "chord_changes"], "active": true}}
+  ],
+  
+  "connections": [
+    {"from": "audio_in.signal", "to": "fft.signal"},
+    {"from": "audio_in.signal", "to": "pattern_rec.signal"},
+    {"from": "fft.magnitude", "to": "transformer.sequence"},
+    {"from": "transformer.embeddings", "to": "genre_classifier.time_series"},
+    {"from": "fft.magnitude", "to": "chord_detector.spectrum"},
+    {"from": "fft.magnitude", "to": "viz_spectrum.data"},
+    {"from": "genre_classifier.class_probs", "to": "viz_structure.genre_probs"}
+  ]
+}
+

@@ -1,0 +1,32 @@
+{
+  "id": "game_code",
+  "name": "Game Algorithm Generator",
+  "version": "1.0",
+  "description": "Generate and optimize game algorithms (pathfinding, AI behaviors, procedural generation) using chaos-guided search and ML performance prediction.",
+  "category": "Creative",
+  "tags": ["game-dev", "algorithms", "code-generation", "optimization"],
+  "author": "GMCS Team",
+  "created": "2025-10-31",
+  
+  "nodes": [
+    {"id": "problem_spec", "type": "input", "name": "Algorithm Problem Spec", "position": {"x": 100, "y": 300}, "config": {"problem_type": "pathfinding", "constraints": ["fast", "smooth", "memory_efficient"]}},
+    {"id": "algo_explorer", "type": "oscillator", "name": "Algorithm Explorer", "position": {"x": 100, "y": 450}, "config": {"count": 32}},
+    {"id": "code_generator", "type": "ml", "name": "Code Generator", "position": {"x": 350, "y": 300}, "config": {"type": "Transformer Encoder", "model_name": "codegen", "hidden_size": 1024}},
+    {"id": "algo_tester", "type": "processor", "name": "Algorithm Tester", "position": {"x": 600, "y": 300}, "config": {"test_cases": 100, "metrics": ["time", "memory", "quality"], "sandbox": true}},
+    {"id": "ml_selector", "type": "ml", "name": "ML Performance Selector", "position": {"x": 850, "y": 300}, "config": {"type": "MLP Predictor", "input_dim": 50, "hidden_dims": [128, 64], "output_dim": 3}},
+    {"id": "best_code", "type": "storage", "name": "Best Implementations", "position": {"x": 1100, "y": 300}, "config": {"top_k": 5, "format": "source_code", "export_language": "javascript"}},
+    {"id": "viz_perf", "type": "visualizer", "name": "Performance Metrics", "position": {"x": 600, "y": 550}, "config": {"type": "Radar Chart", "metrics": ["speed", "memory", "quality", "readability"], "active": true}},
+    {"id": "viz_code", "type": "visualizer", "name": "Code Viewer", "position": {"x": 1100, "y": 550}, "config": {"type": "Code Display", "syntax_highlight": true, "active": true}}
+  ],
+  
+  "connections": [
+    {"from": "problem_spec.spec", "to": "code_generator.sequence"},
+    {"from": "algo_explorer.states", "to": "code_generator.latent_variation"},
+    {"from": "code_generator.embeddings", "to": "algo_tester.code"},
+    {"from": "algo_tester.results", "to": "ml_selector.features"},
+    {"from": "ml_selector.prediction", "to": "best_code.candidates"},
+    {"from": "algo_tester.results", "to": "viz_perf.data"},
+    {"from": "best_code.code", "to": "viz_code.data"}
+  ]
+}
+

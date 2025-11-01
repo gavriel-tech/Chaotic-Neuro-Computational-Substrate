@@ -5,7 +5,7 @@ Implements data parallelism using JAX's pmap for distributing
 simulation across multiple GPUs.
 """
 
-from typing import Tuple, List, Optional
+from typing import Tuple, List, Optional, Dict
 import jax
 import jax.numpy as jnp
 from jax import pmap, device_put
@@ -327,3 +327,294 @@ def benchmark_multi_gpu(
         'multi_gpu_fps': n_steps / multi_gpu_time
     }
 
+
+# ============================================================================
+# Multi-GPU THRML Sampling
+# ============================================================================
+
+class MultiGPUTHRMLSampler:
+    """
+    Multi-GPU THRML sampler using JAX pmap for parallel chain sampling.
+    
+    This class enables efficient sampling of multiple THRML chains across
+    multiple GPUs, providing near-linear speedup for independent sampling.
+    
+    Key features:
+    - Parallel chain sampling using pmap
+    - Automatic device detection and allocation
+    - Load balancing across GPUs
+    - Gradient aggregation for CD learning
+    - Compatible with all blocking strategies
+    """
+    
+    def __init__(self, thrml_wrapper, n_devices: Optional[int] = None):
+        """
+        Initialize multi-GPU THRML sampler.
+        
+        Args:
+            thrml_wrapper: THRMLWrapper instance to replicate
+            n_devices: Number of devices to use (None = all available)
+        """
+        self.base_wrapper = thrml_wrapper
+        self.devices = detect_devices()
+        
+        if n_devices is None:
+            self.n_devices = len(self.devices)
+        else:
+            self.n_devices = min(n_devices, len(self.devices))
+        
+        self.devices = self.devices[:self.n_devices]
+        
+        print(f"[MultiGPU-THRML] Initialized with {self.n_devices} devices")
+        for i, device in enumerate(self.devices):
+            print(f"  Device {i}: {device}")
+    
+    def sample_parallel_chains(
+        self,
+        n_chains: int,
+        n_steps: int,
+        temperature: float,
+        key: jax.random.PRNGKey
+    ) -> Tuple[np.ndarray, List[Dict]]:
+        """
+        Sample multiple THRML chains in parallel across GPUs.
+        
+        Args:
+            n_chains: Total number of chains (distributed across GPUs)
+            n_steps: Gibbs steps per chain
+            temperature: Sampling temperature
+            key: JAX random key
+            
+        Returns:
+            Tuple of (samples, diagnostics)
+            - samples: (n_chains, n_nodes) array of binary states
+            - diagnostics: List of per-chain diagnostic dicts
+        """
+        # Ensure n_chains is divisible by n_devices
+        chains_per_device = (n_chains + self.n_devices - 1) // self.n_devices
+        total_chains = chains_per_device * self.n_devices
+        
+        print(f"[MultiGPU-THRML] Sampling {total_chains} chains ({chains_per_device} per device)")
+        
+        # Split keys for each chain
+        keys = jax.random.split(key, total_chains)
+        keys = keys.reshape(self.n_devices, chains_per_device, -1)
+        
+        # Define single-chain sampling function
+        def sample_single_chain(chain_key):
+            """Sample one chain (will be vmapped and pmapped)."""
+            from thrml import Block, SamplingSchedule, sample_states
+            from thrml.models import IsingSamplingProgram, hinton_init, IsingEBM
+            
+            # Update beta
+            beta_temp = 1.0 / temperature
+            beta_jax = jnp.array(beta_temp, dtype=jnp.float32)
+            
+            # Create model (using base wrapper's parameters)
+            model = IsingEBM(
+                nodes=self.base_wrapper.nodes,
+                edges=self.base_wrapper.edges,
+                biases=self.base_wrapper.biases_jax,
+                weights=self.base_wrapper.edge_weights_jax,
+                beta=beta_jax
+            )
+            
+            # Create program
+            program = IsingSamplingProgram(
+                model=model,
+                free_blocks=self.base_wrapper.free_blocks,
+                clamped_blocks=[]
+            )
+            
+            # Initialize
+            k_init, k_samp = jax.random.split(chain_key)
+            init_state = hinton_init(k_init, model, self.base_wrapper.free_blocks, ())
+            
+            # Sample
+            schedule = SamplingSchedule(
+                n_warmup=max(1, n_steps // 2),
+                n_samples=1,
+                steps_per_sample=2
+            )
+            
+            samples = sample_states(
+                k_samp,
+                program,
+                schedule,
+                init_state,
+                [],
+                [Block(self.base_wrapper.nodes)]
+            )
+            
+            return samples[-1]  # Return final sample
+        
+        # Vmap over chains per device
+        vmapped_sample = jax.vmap(sample_single_chain)
+        
+        # Pmap across devices
+        pmapped_sample = jax.pmap(vmapped_sample, devices=self.devices)
+        
+        # Execute
+        import time
+        t_start = time.time()
+        
+        all_samples = pmapped_sample(keys)
+        
+        # Wait for completion
+        all_samples = jax.device_get(all_samples)
+        
+        wall_time = time.time() - t_start
+        
+        # Reshape from (n_devices, chains_per_device, n_nodes) to (total_chains, n_nodes)
+        all_samples = np.array(all_samples).reshape(-1, self.base_wrapper.n_nodes)
+        
+        # Trim to requested n_chains
+        all_samples = all_samples[:n_chains]
+        
+        # Compute diagnostics
+        diagnostics = []
+        for i in range(n_chains):
+            sample = all_samples[i]
+            energy = self.base_wrapper.compute_energy(sample)
+            magnetization = float(np.mean(sample))
+            
+            diagnostics.append({
+                'chain_id': i,
+                'device_id': i % self.n_devices,
+                'energy': energy,
+                'magnetization': magnetization,
+                'wall_time': wall_time
+            })
+        
+        print(f"[MultiGPU-THRML] Completed {n_chains} chains in {wall_time:.3f}s "
+              f"({n_chains/wall_time:.1f} chains/sec)")
+        
+        return all_samples, diagnostics
+    
+    def parallel_cd_update(
+        self,
+        data_states: np.ndarray,
+        eta: float,
+        k_steps: int,
+        n_chains: int,
+        key: jax.random.PRNGKey
+    ) -> Dict[str, float]:
+        """
+        Parallel Contrastive Divergence update across multiple GPUs.
+        
+        Samples multiple chains in parallel, then aggregates gradients
+        for a more accurate CD update.
+        
+        Args:
+            data_states: (n_nodes,) observed data states
+            eta: Learning rate
+            k_steps: CD-k steps
+            n_chains: Number of parallel chains
+            key: JAX random key
+            
+        Returns:
+            Diagnostic dict with gradient norms, energy differences
+        """
+        print(f"[MultiGPU-THRML] Running parallel CD-{k_steps} with {n_chains} chains")
+        
+        # Compute data statistics
+        data_states_jax = jnp.array(data_states[:self.base_wrapper.n_nodes], dtype=jnp.float32)
+        C_data = jnp.outer(data_states_jax, data_states_jax)
+        data_energy = self.base_wrapper.compute_energy(data_states)
+        
+        # Sample multiple chains in parallel
+        temperature = 1.0 / float(self.base_wrapper.beta)
+        model_samples, _ = self.sample_parallel_chains(
+            n_chains=n_chains,
+            n_steps=k_steps,
+            temperature=temperature,
+            key=key
+        )
+        
+        # Compute model statistics (averaged over chains)
+        C_model = jnp.zeros_like(C_data)
+        for sample in model_samples:
+            sample_jax = jnp.array(sample, dtype=jnp.float32)
+            C_model += jnp.outer(sample_jax, sample_jax)
+        C_model /= n_chains
+        
+        # Compute gradient
+        delta_W = eta * (C_data - C_model)
+        gradient_norm = float(jnp.linalg.norm(delta_W))
+        
+        # Update weights in base wrapper
+        self.base_wrapper._full_weights[:self.base_wrapper.n_nodes, :self.base_wrapper.n_nodes] += np.array(delta_W)
+        
+        # Ensure symmetry
+        weights_upper = np.triu(self.base_wrapper._full_weights[:self.base_wrapper.n_nodes, :self.base_wrapper.n_nodes], k=1)
+        self.base_wrapper._full_weights[:self.base_wrapper.n_nodes, :self.base_wrapper.n_nodes] = (
+            weights_upper + weights_upper.T
+        )
+        np.fill_diagonal(self.base_wrapper._full_weights[:self.base_wrapper.n_nodes, :self.base_wrapper.n_nodes], 0.0)
+        
+        # Rebuild edge list
+        self.base_wrapper.edges = []
+        self.base_wrapper.edge_weights = []
+        
+        for i in range(self.base_wrapper.n_nodes):
+            for j in range(i + 1, self.base_wrapper.n_nodes):
+                w = self.base_wrapper._full_weights[i, j]
+                if abs(w) > 1e-6:
+                    self.base_wrapper.edges.append((self.base_wrapper.nodes[i], self.base_wrapper.nodes[j]))
+                    self.base_wrapper.edge_weights.append(float(w))
+        
+        # Update JAX arrays
+        self.base_wrapper.edge_weights_jax = jnp.array(
+            self.base_wrapper.edge_weights if self.base_wrapper.edge_weights else [0.0],
+            dtype=jnp.float32
+        )
+        
+        # Recreate model
+        from thrml.models import IsingEBM
+        self.base_wrapper.model = IsingEBM(
+            nodes=self.base_wrapper.nodes,
+            edges=self.base_wrapper.edges,
+            biases=self.base_wrapper.biases_jax,
+            weights=self.base_wrapper.edge_weights_jax,
+            beta=self.base_wrapper.beta_jax
+        )
+        
+        # Compute model energy (use mean of samples)
+        model_energy = np.mean([self.base_wrapper.compute_energy(s) for s in model_samples])
+        
+        return {
+            'gradient_norm': gradient_norm,
+            'data_energy': data_energy,
+            'model_energy': float(model_energy),
+            'energy_diff': data_energy - float(model_energy),
+            'n_chains': n_chains,
+            'n_devices': self.n_devices,
+            'k_steps': k_steps
+        }
+
+
+def create_multi_gpu_thrml_sampler(
+    thrml_wrapper,
+    n_devices: Optional[int] = None
+) -> Optional[MultiGPUTHRMLSampler]:
+    """
+    Factory function to create multi-GPU THRML sampler.
+    
+    Args:
+        thrml_wrapper: THRMLWrapper instance
+        n_devices: Number of devices (None = all)
+        
+    Returns:
+        MultiGPUTHRMLSampler or None if only 1 device available
+    """
+    devices = detect_devices()
+    
+    if len(devices) < 2:
+        print("[MultiGPU-THRML] Only 1 device available, multi-GPU disabled")
+        return None
+    
+    try:
+        return MultiGPUTHRMLSampler(thrml_wrapper, n_devices)
+    except Exception as e:
+        print(f"[MultiGPU-THRML] Failed to create multi-GPU sampler: {e}")
+        return None

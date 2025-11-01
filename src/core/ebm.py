@@ -1,26 +1,35 @@
 """
-Energy-Based Model (EBM) learning using THRML for block Gibbs sampling.
+Energy-Based Model (EBM) learning using generic SamplerBackend interface.
 
 Implements Contrastive Divergence learning for coupling oscillators through
-learned weights using THRML's probabilistic graphical model framework.
+learned weights using a pluggable sampler backend (THRML, photonic, neuromorphic, etc.).
 
-THRML provides:
+The SamplerBackend abstraction provides:
 - Blocked Gibbs sampling for discrete PGMs
 - Efficient GPU-accelerated sampling
 - Support for heterogeneous graphical models
 - Energy-based model utilities
+- Multi-chain parallelism
+- Conditional sampling (clamped nodes)
+- Comprehensive benchmarking
 
-This module now uses THRML as the primary EBM implementation.
+This module uses the SamplerBackend interface, with THRML as the default implementation.
 """
 
 from collections import deque
-from typing import Tuple, Optional, Deque, List
+from typing import Tuple, Optional, Deque, List, Dict, Any
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 
-# THRML integration (required)
+# Generic sampler backend interface
+from src.core.sampler_backend import SamplerBackend, SamplerBackendRegistry
+
+# THRML backend (default)
+from src.core.thrml_sampler_backend import THRMLSamplerBackend
+
+# Legacy THRML integration (for backward compatibility)
 from src.core.thrml_integration import (
     THRMLWrapper,
     create_thrml_model,
@@ -83,6 +92,49 @@ def get_last_thrml_feedback() -> Optional[np.ndarray]:
     return _last_thrml_feedback.copy()
 
 
+def create_sampler_backend(
+    backend_type: str,
+    n_nodes: int,
+    weights: np.ndarray,
+    biases: np.ndarray,
+    **kwargs
+) -> SamplerBackend:
+    """
+    Factory function to create a sampler backend.
+    
+    Args:
+        backend_type: Type of backend ('thrml', 'photonic', 'neuromorphic', 'quantum')
+        n_nodes: Number of nodes
+        weights: (n_nodes, n_nodes) coupling matrix
+        biases: (n_nodes,) bias vector
+        **kwargs: Backend-specific parameters
+        
+    Returns:
+        SamplerBackend instance
+    """
+    backend_class = SamplerBackendRegistry.get_backend(backend_type)
+    
+    if backend_class is None:
+        raise ValueError(f"Unknown backend type: {backend_type}. Available: {SamplerBackendRegistry.list_backends()}")
+    
+    return backend_class(
+        n_nodes=n_nodes,
+        initial_weights=weights,
+        initial_biases=biases,
+        **kwargs
+    )
+
+
+def get_available_backends() -> List[Dict[str, Any]]:
+    """
+    Get list of available sampler backends with their capabilities.
+    
+    Returns:
+        List of dicts with backend info
+    """
+    return SamplerBackendRegistry.get_available_backends()
+
+
 @jax.jit
 def binary_state_from_x(x_vec: jnp.ndarray, threshold: float = 0.0) -> jnp.ndarray:
     """
@@ -98,6 +150,69 @@ def binary_state_from_x(x_vec: jnp.ndarray, threshold: float = 0.0) -> jnp.ndarr
         (N,) array of binary states {-1, +1}
     """
     return jnp.where(x_vec > threshold, 1.0, -1.0)
+
+
+def _symmetrize_weights(weights: jnp.ndarray) -> jnp.ndarray:
+    """Ensure weight matrix is symmetric with zero diagonal."""
+    weights = 0.5 * (weights + weights.T)
+    return weights - jnp.diag(jnp.diag(weights))
+
+
+def _apply_mask(weights: jnp.ndarray, mask: jnp.ndarray) -> jnp.ndarray:
+    mask_matrix = mask[:, None] * mask[None, :]
+    return weights * mask_matrix
+
+
+def ebm_cd1_update(
+    ebm_weights: jnp.ndarray,
+    oscillator_states: jnp.ndarray,
+    mask: jnp.ndarray,
+    key: jax.random.PRNGKey,
+    eta: float,
+    k_steps: int = 1,
+) -> Tuple[jnp.ndarray, jax.random.PRNGKey]:
+    """Contrastive Divergence (CD-1) update for the EBM weights."""
+
+    active_indices = jnp.where(mask > 0.5)[0]
+    if active_indices.size == 0:
+        return ebm_weights.astype(jnp.float32), key
+
+    active_indices_np = np.asarray(active_indices)
+    weights_np = np.asarray(ebm_weights, dtype=np.float32)
+    active_weights = weights_np[np.ix_(active_indices_np, active_indices_np)]
+
+    biases = np.zeros(len(active_indices_np), dtype=np.float32)
+
+    wrapper = create_thrml_model(
+        n_nodes=len(active_indices_np),
+        weights=active_weights,
+        biases=biases,
+        beta=1.0,
+    )
+
+    binary_states = binary_state_from_x(oscillator_states[:, 0])
+    binary_states = jnp.where(binary_states == 0.0, 1.0, binary_states)
+    active_states = np.asarray(binary_states[active_indices], dtype=np.float32)
+
+    eta_float = float(eta)
+    key, subkey = jax.random.split(key)
+    wrapper.update_weights_cd(
+        data_states=active_states,
+        eta=eta_float,
+        k_steps=max(int(k_steps), 1),
+        key=subkey,
+        n_chains=1,
+    )
+
+    updated_weights = weights_np.copy()
+    updated_submatrix = wrapper.get_weights()
+    updated_weights[np.ix_(active_indices_np, active_indices_np)] = updated_submatrix
+
+    updated_jnp = jnp.asarray(updated_weights, dtype=jnp.float32)
+    updated_jnp = _apply_mask(updated_jnp, mask)
+    updated_jnp = _symmetrize_weights(updated_jnp)
+
+    return updated_jnp.astype(jnp.float32), key
 
 
 def ebm_update_with_thrml(
@@ -160,6 +275,63 @@ def ebm_update_with_thrml(
     return thrml_wrapper, diagnostics
 
 
+def ebm_update_with_backend(
+    backend: SamplerBackend,
+    oscillator_states: jnp.ndarray,
+    mask: jnp.ndarray,
+    eta: float,
+    k_steps: int,
+    key: jax.random.PRNGKey,
+    x_threshold: float = 0.0,
+    n_chains: int = 1
+) -> Tuple[SamplerBackend, dict]:
+    """
+    Update sampler backend using optimized CD-k learning with parallel chains.
+    
+    Generic version that works with any SamplerBackend implementation.
+    
+    Algorithm:
+    1. Convert oscillator x-values to binary states
+    2. Apply mask to get active node states
+    3. Call backend's update_weights() with n_chains
+    4. Return updated backend and diagnostics
+    
+    Args:
+        backend: SamplerBackend instance
+        oscillator_states: (N_MAX, 3) oscillator [x, y, z] states
+        mask: (N_MAX,) active node mask
+        eta: Learning rate
+        k_steps: Number of Gibbs steps for CD-k
+        key: JAX random key
+        x_threshold: Threshold for binary conversion
+        n_chains: Number of parallel sampling chains (default 1)
+        
+    Returns:
+        Tuple of (updated SamplerBackend, diagnostics dict)
+    """
+    # Extract x values (first dimension of oscillator states)
+    x_values = oscillator_states[:, 0]
+    
+    # Convert to binary states
+    s_data = binary_state_from_x(x_values, x_threshold)
+    
+    # Apply mask to data states
+    s_data_masked = s_data * mask
+    
+    # Convert to numpy for backend
+    s_data_np = np.array(s_data_masked)
+    
+    # Update backend weights using CD-k with parallel chains
+    diagnostics = backend.update_weights(
+        data_states=s_data_np,
+        learning_rate=eta,
+        k_steps=k_steps,
+        num_chains=n_chains
+    )
+    
+    return backend, diagnostics
+
+
 def compute_thrml_feedback(
     thrml_wrapper: THRMLWrapper,
     gmcs_biases: jnp.ndarray,
@@ -179,34 +351,152 @@ def compute_thrml_feedback(
     4. Return as JAX array
     
     Args:
-        thrml_wrapper: THRMLWrapper instance
+        thrml_wrapper: THRMLWrapper instance (can be None for fallback)
         gmcs_biases: (N_MAX,) biases from GMCS pipeline
         temperature: Sampling temperature
         gibbs_steps: Number of Gibbs steps
         key: JAX random key
         
     Returns:
+        (N_MAX,) array of feedback terms (zeros on error)
+    """
+    # Validate wrapper is not None
+    if thrml_wrapper is None:
+        print("[THRML WARNING] thrml_wrapper is None, returning zero feedback")
+        return jnp.zeros_like(gmcs_biases, dtype=jnp.float32)
+    
+    try:
+        # Validate inputs
+        if not np.isfinite(temperature) or temperature <= 0:
+            raise ValueError(f"Invalid temperature: {temperature}")
+        
+        if gibbs_steps <= 0:
+            raise ValueError(f"Invalid gibbs_steps: {gibbs_steps}")
+        
+        # Convert biases safely
+        gmcs_biases_np = np.asarray(gmcs_biases, dtype=np.float32)
+        
+        if not np.all(np.isfinite(gmcs_biases_np)):
+            print("[THRML WARNING] Non-finite biases, clipping")
+            gmcs_biases_np = np.nan_to_num(gmcs_biases_np, nan=0.0, posinf=1.0, neginf=-1.0)
+        
+        # Update THRML biases from GMCS
+        thrml_wrapper.update_biases(gmcs_biases_np)
+        
+        # Sample binary states using THRML
+        binary_states = thrml_wrapper.sample_gibbs(
+            n_steps=gibbs_steps,
+            temperature=temperature,
+            key=key
+        )
+        
+        # Validate sample output
+        if binary_states is None or binary_states.size == 0:
+            raise RuntimeError("THRML sampling returned None or empty array")
+        
+        if not np.all(np.isfinite(binary_states)):
+            raise RuntimeError("THRML sampling returned non-finite values")
+        
+        # Record sample for visualizers
+        _record_thrml_sample(binary_states)
+
+        # Get weight matrix
+        weights = thrml_wrapper.get_weights()
+        
+        # Compute feedback: W @ s
+        feedback = np.dot(weights, binary_states)
+        
+        # Validate feedback
+        if not np.all(np.isfinite(feedback)):
+            print("[THRML WARNING] Non-finite feedback, clipping")
+            feedback = np.nan_to_num(feedback, nan=0.0, posinf=1.0, neginf=-1.0)
+        
+        global _last_thrml_feedback, _last_thrml_feedback_norm
+        _last_thrml_feedback = np.array(feedback, dtype=np.float32).copy()
+        _last_thrml_feedback_norm = float(np.linalg.norm(_last_thrml_feedback))
+
+        # Log feedback stats for diagnostics (throttled)
+        feedback_norm = _last_thrml_feedback_norm
+        feedback_max = np.max(np.abs(feedback))
+        if feedback_norm > 0.1:  # Only log if significant
+            print(f"[THRML] Feedback: norm={feedback_norm:.4f}, max={feedback_max:.4f}")
+        
+        # Convert to JAX array and pad to N_MAX
+        n_max = gmcs_biases.shape[0]
+        feedback_jax = jnp.zeros(n_max, dtype=jnp.float32)
+        
+        # Safely set feedback values
+        n_feedback = min(len(feedback), n_max)
+        feedback_jax = feedback_jax.at[:n_feedback].set(
+            jnp.array(feedback[:n_feedback], dtype=jnp.float32)
+        )
+        
+        return feedback_jax
+        
+    except Exception as e:
+        print(f"[THRML ERROR] compute_thrml_feedback failed: {e}")
+        # Return zero feedback on error
+        return jnp.zeros_like(gmcs_biases, dtype=jnp.float32)
+
+
+def compute_backend_feedback(
+    backend: SamplerBackend,
+    gmcs_biases: jnp.ndarray,
+    temperature: float,
+    gibbs_steps: int,
+    key: jax.random.PRNGKey,
+    num_chains: int = 1,
+    blocking_strategy: str = "auto"
+) -> jnp.ndarray:
+    """
+    Sample from backend and compute feedback for oscillators.
+    
+    Generic version that works with any SamplerBackend implementation.
+    
+    Algorithm:
+    1. Update backend biases from GMCS pipeline (if THRML backend)
+    2. Sample binary states via backend.sample()
+    3. Compute feedback: W @ binary_states
+    4. Return as JAX array
+    
+    Args:
+        backend: SamplerBackend instance
+        gmcs_biases: (N_MAX,) biases from GMCS pipeline
+        temperature: Sampling temperature
+        gibbs_steps: Number of Gibbs steps
+        key: JAX random key
+        num_chains: Number of parallel chains (default 1)
+        blocking_strategy: Blocking strategy name (default "auto")
+        
+    Returns:
         (N_MAX,) array of feedback terms
     """
-    # Update THRML biases from GMCS
+    # Update biases if backend supports it (THRML does)
     gmcs_biases_np = np.array(gmcs_biases)
-    thrml_wrapper.update_biases(gmcs_biases_np)
+    if isinstance(backend, THRMLSamplerBackend):
+        backend.thrml_wrapper.update_biases(gmcs_biases_np)
     
-    # Sample binary states using THRML
-    binary_states = thrml_wrapper.sample_gibbs(
+    # Sample binary states using backend
+    samples, diagnostics = backend.sample(
         n_steps=gibbs_steps,
         temperature=temperature,
-        key=key
+        num_chains=num_chains,
+        blocking_strategy_name=blocking_strategy
     )
     
-    # Record sample for visualizers
-    _record_thrml_sample(binary_states)
-
-    # Get weight matrix
-    weights = thrml_wrapper.get_weights()
+    # Extract final sample (take first chain if multi-chain)
+    if samples.ndim == 2:
+        binary_states = samples[0]  # First chain
+    else:
+        binary_states = samples
+    
+    # Record sample for visualizers (if THRML)
+    if isinstance(backend, THRMLSamplerBackend):
+        _record_thrml_sample(binary_states)
     
     # Compute feedback: W @ s
-    feedback = np.dot(weights, binary_states)
+    # For multi-chain, we could average, but for now use first chain
+    feedback = np.dot(backend.current_weights[:backend.n_nodes, :backend.n_nodes], binary_states[:backend.n_nodes])
     
     global _last_thrml_feedback, _last_thrml_feedback_norm
     _last_thrml_feedback = np.array(feedback, dtype=np.float32).copy()
@@ -216,7 +506,7 @@ def compute_thrml_feedback(
     feedback_norm = _last_thrml_feedback_norm
     feedback_max = np.max(np.abs(feedback))
     if feedback_norm > 0:
-        print(f"[THRML] Feedback computed: norm={feedback_norm:.4f}, max={feedback_max:.4f}, n_nodes={thrml_wrapper.n_nodes}")
+        print(f"[Backend] Feedback computed: norm={feedback_norm:.4f}, max={feedback_max:.4f}, n_nodes={backend.n_nodes}, backend={backend.__class__.__name__}")
     
     # Convert to JAX array and pad to N_MAX
     n_max = gmcs_biases.shape[0]
@@ -377,10 +667,11 @@ def normalize_weights(
 # ============================================================================
 
 
-@jax.jit
 def compute_weight_statistics(ebm_weights: jnp.ndarray, mask: jnp.ndarray) -> dict:
     """
     Compute statistics about weight matrix.
+    
+    Note: Cannot use @jax.jit due to boolean indexing.
     
     Args:
         ebm_weights: (N_MAX, N_MAX) weight matrix
@@ -389,10 +680,18 @@ def compute_weight_statistics(ebm_weights: jnp.ndarray, mask: jnp.ndarray) -> di
     Returns:
         Dictionary with statistics
     """
-    # Get active portion of weights
-    n_active = int(jnp.sum(mask))
+    # Extract active submatrix using mask
+    mask_2d = jnp.outer(mask, mask)
+    active_weights = ebm_weights * mask_2d
     
-    if n_active == 0:
+    # Compute statistics (excluding zeros from inactive nodes)
+    nonzero_mask = mask_2d > 0.5
+    
+    # Boolean indexing requires concrete arrays (no JIT)
+    active_values = active_weights[nonzero_mask]
+    
+    # Check if we have any active values
+    if active_values.size == 0:
         return {
             'mean': 0.0,
             'std': 0.0,
@@ -400,17 +699,66 @@ def compute_weight_statistics(ebm_weights: jnp.ndarray, mask: jnp.ndarray) -> di
             'min': 0.0,
         }
     
-    # Extract active submatrix
-    mask_2d = jnp.outer(mask, mask)
-    active_weights = ebm_weights * mask_2d
-    
-    # Compute statistics (excluding zeros from inactive nodes)
-    nonzero_mask = mask_2d > 0.5
-    active_values = active_weights[nonzero_mask]
-    
     return {
         'mean': float(jnp.mean(active_values)),
         'std': float(jnp.std(active_values)),
         'max': float(jnp.max(active_values)),
         'min': float(jnp.min(active_values)),
     }
+
+
+def thrml_sample(
+    weights: jnp.ndarray,
+    initial_state: jnp.ndarray,
+    key: jax.random.PRNGKey,
+    n_steps: int,
+    temperature: float = 1.0
+) -> jnp.ndarray:
+    """
+    Perform THRML Gibbs sampling to generate binary states.
+    
+    Args:
+        weights: (n_nodes, n_nodes) weight matrix for EBM
+        initial_state: (n_nodes,) initial binary state {-1, +1} (currently unused)
+        key: JAX random key for sampling
+        n_steps: Number of Gibbs sampling steps
+        temperature: Sampling temperature (default 1.0)
+        
+    Returns:
+        (n_nodes,) binary state {-1, +1}
+        
+    Raises:
+        RuntimeError: If THRML is not available
+        ValueError: If inputs are invalid
+    """
+    n_nodes = weights.shape[0]
+    
+    # Convert to numpy for THRML
+    weights_np = np.asarray(weights, dtype=np.float32)
+    biases = np.zeros(n_nodes, dtype=np.float32)
+    
+    # Create THRML wrapper
+    wrapper = create_thrml_model(
+        n_nodes=n_nodes,
+        weights=weights_np,
+        biases=biases,
+        beta=1.0 / temperature,
+        fallback_on_error=False
+    )
+    
+    if wrapper is None:
+        raise RuntimeError("Failed to create THRML model")
+    
+    # Run Gibbs sampling
+    sampled_state = wrapper.sample_gibbs(
+        n_steps=n_steps,
+        temperature=temperature,
+        key=key,
+        return_all_samples=False
+    )
+    
+    # Convert back to JAX array and ensure binary {-1, +1}
+    sampled_jax = jnp.asarray(sampled_state, dtype=jnp.float32)
+    sampled_jax = jnp.where(sampled_jax == 0.0, -1.0, sampled_jax)
+    
+    return sampled_jax

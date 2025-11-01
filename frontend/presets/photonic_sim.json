@@ -1,0 +1,278 @@
+{
+  "id": "photonic_sim",
+  "name": "Photonic Processor Simulation",
+  "version": "1.0",
+  "description": "Simulate optical neural networks using photonic computing primitives. Model nonlinear optical effects (Kerr, four-wave mixing) and see how light-based computation can implement neural network operations at the speed of light.",
+  "category": "Scientific",
+  "tags": ["photonics", "optical", "computing", "simulation", "neural-network"],
+  "author": "GMCS Team",
+  "created": "2025-10-31",
+  
+  "documentation": {
+    "overview": "This preset simulates a photonic processor where optical waveguides, resonators, and nonlinear elements implement neural network computations. Light propagates through optical components, experiencing interference, phase shifts, and nonlinear transformations. The result is a physical simulation of how photonic chips could perform AI inference at extremely high speeds with low power.",
+    "expectedBehavior": "Optical pulses propagate through the simulated chip. You'll see interference patterns, wavelength conversion via four-wave mixing, and optical switching. The network performs matrix-vector multiplications and nonlinear activations entirely in the optical domain. Output shows both the optical field and the computed result.",
+    "parameters": {
+      "optical_power": "Input laser power (affects nonlinear effects)",
+      "wavelength": "Operating wavelength (1550nm typical for telecom)",
+      "nonlinearity_strength": "Kerr coefficient (higher = stronger nonlinear effects)"
+    },
+    "successMetrics": [
+      "Optical matrix multiplication with >95% accuracy",
+      "Nonlinear activation implementation",
+      "Propagation delays <1 picosecond per layer"
+    ]
+  },
+
+  "nodes": [
+    {
+      "id": "optical_source",
+      "type": "generator",
+      "name": "Optical Pulse Generator",
+      "position": {"x": 100, "y": 250},
+      "config": {
+        "wavelength": 1550,
+        "power": 1.0,
+        "pulse_width": 100,
+        "repetition_rate": 1e9,
+        "modulation": "data_encoding"
+      }
+    },
+    {
+      "id": "input_encoder",
+      "type": "processor",
+      "name": "Data-to-Optical Encoder",
+      "position": {"x": 250, "y": 250},
+      "config": {
+        "encoding": "amplitude",
+        "channels": 16,
+        "normalization": true
+      }
+    },
+    {
+      "id": "kerr_medium",
+      "type": "processor",
+      "name": "Kerr Nonlinearity",
+      "position": {"x": 400, "y": 200},
+      "config": {
+        "algorithm": "optical_kerr",
+        "n2_coefficient": 2.6e-20,
+        "length": 1e-3,
+        "effective_area": 10e-12
+      }
+    },
+    {
+      "id": "waveguide_network",
+      "type": "processor",
+      "name": "Optical Waveguide Mesh",
+      "position": {"x": 550, "y": 250},
+      "config": {
+        "topology": "mesh",
+        "size": [8, 8],
+        "coupling": "directional",
+        "phase_shifters": true
+      }
+    },
+    {
+      "id": "four_wave_mixing",
+      "type": "processor",
+      "name": "Four-Wave Mixing",
+      "position": {"x": 400, "y": 350},
+      "config": {
+        "algorithm": "four_wave_mixing",
+        "pump_power": 10.0,
+        "phase_matching": true
+      }
+    },
+    {
+      "id": "resonator_array",
+      "type": "processor",
+      "name": "Microring Resonator Array",
+      "position": {"x": 700, "y": 250},
+      "config": {
+        "num_rings": 16,
+        "q_factor": 10000,
+        "coupling_coefficient": 0.1,
+        "tunable": true
+      }
+    },
+    {
+      "id": "detector_array",
+      "type": "processor",
+      "name": "Photodetector Array",
+      "position": {"x": 850, "y": 250},
+      "config": {
+        "num_detectors": 16,
+        "responsivity": 1.0,
+        "noise_level": 1e-12
+      }
+    },
+    {
+      "id": "signal_processor",
+      "type": "processor",
+      "name": "Electronic Post-Processing",
+      "position": {"x": 1000, "y": 250},
+      "config": {
+        "amplification": true,
+        "filtering": true,
+        "digital_conversion": true
+      }
+    },
+    {
+      "id": "optical_viz",
+      "type": "visualizer",
+      "name": "Optical Field Visualization",
+      "position": {"x": 550, "y": 450},
+      "config": {
+        "type": "2D Field",
+        "property": "intensity",
+        "colormap": "hot",
+        "active": true
+      }
+    },
+    {
+      "id": "spectrum_viz",
+      "type": "visualizer",
+      "name": "Optical Spectrum",
+      "position": {"x": 400, "y": 550},
+      "config": {
+        "type": "Spectrum",
+        "wavelength_range": [1500, 1600],
+        "resolution": 0.1,
+        "active": true
+      }
+    },
+    {
+      "id": "chip_layout_viz",
+      "type": "visualizer",
+      "name": "Photonic Chip Layout",
+      "position": {"x": 700, "y": 450},
+      "config": {
+        "type": "Circuit Diagram",
+        "show_optical_paths": true,
+        "show_power_flow": true,
+        "active": true
+      }
+    }
+  ],
+
+  "connections": [
+    {
+      "from": "optical_source.pulses",
+      "to": "input_encoder.optical_in",
+      "description": "Laser pulses to encoder"
+    },
+    {
+      "from": "input_encoder.encoded",
+      "to": "kerr_medium.input",
+      "description": "Encoded data experiences Kerr nonlinearity"
+    },
+    {
+      "from": "kerr_medium.output",
+      "to": "waveguide_network.input",
+      "description": "Nonlinear optical signal to waveguide mesh"
+    },
+    {
+      "from": "waveguide_network.intermediate",
+      "to": "four_wave_mixing.signal",
+      "description": "Some light undergoes four-wave mixing"
+    },
+    {
+      "from": "four_wave_mixing.output",
+      "to": "waveguide_network.injection",
+      "description": "Generated wavelengths injected back"
+    },
+    {
+      "from": "waveguide_network.output",
+      "to": "resonator_array.input",
+      "description": "Waveguide output to resonators"
+    },
+    {
+      "from": "resonator_array.output",
+      "to": "detector_array.input",
+      "description": "Resonator output to detectors"
+    },
+    {
+      "from": "detector_array.electrical",
+      "to": "signal_processor.input",
+      "description": "Optical-to-electrical conversion"
+    },
+    {
+      "from": "waveguide_network.field",
+      "to": "optical_viz.data",
+      "description": "Visualize optical field"
+    },
+    {
+      "from": "four_wave_mixing.spectrum",
+      "to": "spectrum_viz.data",
+      "description": "Show generated wavelengths"
+    },
+    {
+      "from": "waveguide_network.topology",
+      "to": "chip_layout_viz.data",
+      "description": "Display chip layout"
+    }
+  ],
+
+  "initialState": {
+    "description": "Simulation starts with CW laser, then switches to pulsed mode with data encoding.",
+    "autoStart": true,
+    "warmupSteps": 10
+  },
+
+  "controls": {
+    "description": "Control optical parameters",
+    "parameters": [
+      {
+        "name": "optical_power",
+        "label": "Input Optical Power (mW)",
+        "node": "optical_source",
+        "field": "config.power",
+        "type": "slider",
+        "min": 0.1,
+        "max": 100.0,
+        "step": 0.1,
+        "default": 1.0
+      },
+      {
+        "name": "wavelength",
+        "label": "Wavelength (nm)",
+        "node": "optical_source",
+        "field": "config.wavelength",
+        "type": "slider",
+        "min": 1500,
+        "max": 1600,
+        "step": 1,
+        "default": 1550
+      },
+      {
+        "name": "nonlinearity",
+        "label": "Nonlinearity Strength",
+        "node": "kerr_medium",
+        "field": "config.n2_coefficient",
+        "type": "slider",
+        "min": 0.0,
+        "max": 1e-19,
+        "step": 1e-21,
+        "default": 2.6e-20
+      },
+      {
+        "name": "q_factor",
+        "label": "Resonator Q-Factor",
+        "node": "resonator_array",
+        "field": "config.q_factor",
+        "type": "slider",
+        "min": 1000,
+        "max": 100000,
+        "step": 1000,
+        "default": 10000
+      }
+    ]
+  },
+
+  "requirements": {
+    "minGPUMemory": "6GB",
+    "recommendedGPUMemory": "8GB",
+    "fdtdSupport": true
+  }
+}
+

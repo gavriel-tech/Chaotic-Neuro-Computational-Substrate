@@ -1,7 +1,7 @@
 'use client';
 
-import React, { useState, useCallback, useEffect } from 'react';
-import { NODE_PRESETS, NodePreset } from './NodePresets';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
+import { NODE_PRESETS, NodePreset, GRAPH_PRESETS, GraphPreset } from './NodePresets';
 import {
   OscilloscopeVisualizer,
   SpectrogramVisualizer,
@@ -13,6 +13,78 @@ import {
   XYPlotVisualizer,
   PBitMapperVisualizerWrapper,
 } from '../Visualizers/EmbeddedVisualizers';
+import { notify } from '../UI/Notification';
+import { confirm } from '../UI/ConfirmDialog';
+import { useSimulationStore } from '@/lib/stores/simulation';
+import { useBackendDataStore } from '@/lib/stores/backendData';
+
+// Import all 16 JSON presets directly
+import chaosCrypto from '../../presets/chaos_crypto.json';
+import emergentLogic from '../../presets/emergent_logic.json';
+import gameCode from '../../presets/game_code.json';
+import liveMusic from '../../presets/live_music.json';
+import liveVideo from '../../presets/live_video.json';
+import molecularDesign from '../../presets/molecular_design.json';
+import musicAnalysis from '../../presets/music_analysis.json';
+import nasDiscovery from '../../presets/nas_discovery.json';
+import neuralSim from '../../presets/neural_sim.json';
+import neuromapping from '../../presets/neuromapping.json';
+import photonicSim from '../../presets/photonic_sim.json';
+import pixelArt from '../../presets/pixel_art.json';
+import quantumOpt from '../../presets/quantum_opt.json';
+import rlBoost from '../../presets/rl_boost.json';
+import solarOpt from '../../presets/solar_opt.json';
+import worldGen from '../../presets/world_gen.json';
+
+const JSON_PRESETS = [
+  chaosCrypto, emergentLogic, gameCode, liveMusic, liveVideo, molecularDesign,
+  musicAnalysis, nasDiscovery, neuralSim, neuromapping, photonicSim, pixelArt,
+  quantumOpt, rlBoost, solarOpt, worldGen
+] as any[];
+
+const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000';
+
+interface BackendNodePayload {
+  node_id: number;
+  active: boolean;
+  position?: number[];
+  oscillator_state?: number[];
+  config: Record<string, number>;
+  chain: number[];
+}
+
+interface NodeResponsePayload {
+  status: string;
+  node_id?: number;
+  message?: string;
+  data?: Record<string, unknown>;
+}
+
+const extractPosition = (position: number[] | undefined, fallbackX: number, fallbackY: number) => {
+  if (Array.isArray(position) && position.length >= 2) {
+    const [x, y] = position;
+    if (Number.isFinite(x) && Number.isFinite(y)) {
+      return { x, y };
+    }
+  }
+  return { x: fallbackX, y: fallbackY };
+};
+
+const getDefaultPreset = (): NodePreset => {
+  if (Array.isArray(NODE_PRESETS.oscillators) && NODE_PRESETS.oscillators.length > 0) {
+    return NODE_PRESETS.oscillators[0];
+  }
+  if (Array.isArray(NODE_PRESETS.system) && NODE_PRESETS.system.length > 0) {
+    return NODE_PRESETS.system[0];
+  }
+  const categories = Object.values(NODE_PRESETS) as NodePreset[][];
+  for (const presets of categories) {
+    if (Array.isArray(presets) && presets.length > 0) {
+      return presets[0];
+    }
+  }
+  throw new Error('NODE_PRESETS is empty; cannot determine default preset');
+};
 
 interface Node {
   id: string;
@@ -20,6 +92,7 @@ interface Node {
   x: number;
   y: number;
   config: Record<string, any>;
+  backendId?: number;
 }
 
 interface Connection {
@@ -61,6 +134,8 @@ const VisualizerComponents: Record<string, React.FC<any>> = {
   'P-Bit Mapper': PBitMapperVisualizerWrapper,
 };
 
+const STUB_NODE_TYPES = new Set(['ml', 'analysis', 'control', 'generator', 'custom']);
+
 export const NodeGraphSimple: React.FC = () => {
   const [nodes, setNodes] = useState<Node[]>(() => {
     if (typeof window !== 'undefined') {
@@ -90,7 +165,10 @@ export const NodeGraphSimple: React.FC = () => {
     return [];
   });
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
-  const [showPresets, setShowPresets] = useState(false);
+  const [showNodeModal, setShowNodeModal] = useState(false);
+  const [showGraphPresets, setShowGraphPresets] = useState(false);
+  const [backendPresets, setBackendPresets] = useState<any[]>([]);
+  const [loadingPresets, setLoadingPresets] = useState(false);
   const [presetCategory, setPresetCategory] = useState<string>('oscillators');
   const [draggingNode, setDraggingNode] = useState<{ id: string; offsetX: number; offsetY: number } | null>(null);
   const [showNodeInfo, setShowNodeInfo] = useState<string | null>(null);
@@ -98,6 +176,186 @@ export const NodeGraphSimple: React.FC = () => {
   const [hoveredPort, setHoveredPort] = useState<{ nodeId: string; portIndex: number; isOutput: boolean } | null>(null);
   const [deleteConfirmation, setDeleteConfirmation] = useState<DeleteConfirmation | null>(null);
   const [hoveredConnection, setHoveredConnection] = useState<string | null>(null);
+  const simRunning = useSimulationStore((state) => state.simulationRunning);
+  const { processors, backendNodes, startPolling, stopPolling } = useBackendDataStore((state) => ({
+    processors: state.processors,
+    backendNodes: state.nodes,
+    startPolling: state.startPolling,
+    stopPolling: state.stopPolling,
+  }));
+
+  const [activeNodes, setActiveNodes] = useState<Set<string>>(new Set());
+  const [activeConnections, setActiveConnections] = useState<Set<string>>(new Set());
+
+  const nodesRef = useRef<Node[]>(nodes);
+  const pendingBackendIdsRef = useRef<Set<number>>(new Set());
+
+  useEffect(() => {
+    nodesRef.current = nodes;
+  }, [nodes]);
+
+  // Ensure backend polling is active while the node graph is mounted
+  useEffect(() => {
+    startPolling();
+    return () => stopPolling();
+  }, [startPolling, stopPolling]);
+
+  useEffect(() => {
+    const backendMap = new Map<number, BackendNodePayload>();
+    backendNodes.forEach((backendNode) => {
+      backendMap.set(backendNode.node_id, backendNode);
+      pendingBackendIdsRef.current.delete(backendNode.node_id);
+    });
+
+    if (!backendMap.size && pendingBackendIdsRef.current.size === 0 && nodesRef.current.length === 0) {
+      return;
+    }
+
+    setNodes((prevNodes) => {
+      const updatedNodes: Node[] = [];
+      const removedLocalIds = new Set<string>();
+
+      prevNodes.forEach((node) => {
+        if (node.backendId != null) {
+          const backendNode = backendMap.get(node.backendId);
+          if (backendNode) {
+            const { x, y } = extractPosition(backendNode.position, node.x, node.y);
+            updatedNodes.push({
+              ...node,
+              x,
+              y,
+              config: { ...node.config, ...backendNode.config },
+            });
+            backendMap.delete(node.backendId);
+          } else if (!pendingBackendIdsRef.current.has(node.backendId)) {
+            removedLocalIds.add(node.id);
+          } else {
+            updatedNodes.push(node);
+          }
+        } else {
+          updatedNodes.push(node);
+        }
+      });
+
+      backendMap.forEach((backendNode) => {
+        const preset = getDefaultPreset();
+        const { x, y } = extractPosition(backendNode.position, 100 + updatedNodes.length * 50, 100);
+        let generatedId = `node-${backendNode.node_id}`;
+        if (updatedNodes.some((node) => node.id === generatedId)) {
+          generatedId = `${generatedId}-${Date.now()}`;
+        }
+
+        updatedNodes.push({
+          id: generatedId,
+          preset,
+          x,
+          y,
+          config: { ...preset.config, ...backendNode.config },
+          backendId: backendNode.node_id,
+        });
+      });
+
+      if (removedLocalIds.size > 0) {
+        setConnections((prevConnections) =>
+          prevConnections.filter(
+            (conn) => !removedLocalIds.has(conn.fromNodeId) && !removedLocalIds.has(conn.toNodeId),
+          ),
+        );
+      }
+
+      return updatedNodes;
+    });
+  }, [backendNodes]);
+
+  // Update activity maps based on backend processor data and local graph
+  useEffect(() => {
+    if (!simRunning) {
+      setActiveNodes(new Set());
+      setActiveConnections(new Set());
+      return;
+    }
+
+    const newActiveNodes = new Set<string>();
+    const newActiveConnections = new Set<string>();
+
+    processors.forEach((proc) => {
+      if (proc?.active) {
+        const nodeId = String(proc.node_id);
+        newActiveNodes.add(nodeId);
+        connections
+          .filter((conn) => conn.fromNodeId === nodeId)
+          .forEach((conn) => newActiveConnections.add(conn.id));
+      }
+    });
+
+    nodes.forEach((node) => {
+      const outputConnections = connections.filter((conn) => conn.fromNodeId === node.id);
+      if (
+        outputConnections.length > 0 &&
+        (node.preset.type === 'oscillator' || node.preset.type === 'algorithm')
+      ) {
+        newActiveNodes.add(node.id);
+        outputConnections.forEach((conn) => newActiveConnections.add(conn.id));
+      }
+    });
+
+    nodes.forEach((node) => {
+      const inputConnections = connections.filter((conn) => conn.toNodeId === node.id);
+      const hasActiveInput = inputConnections.some((conn) => newActiveConnections.has(conn.id));
+      if (hasActiveInput) {
+        newActiveNodes.add(node.id);
+      }
+    });
+
+    setActiveNodes(newActiveNodes);
+    setActiveConnections(newActiveConnections);
+  }, [simRunning, processors, nodes, connections]);
+
+  // Load backend presets when modal opens
+  useEffect(() => {
+    if (showGraphPresets && backendPresets.length === 0) {
+      loadBackendPresets();
+    }
+  }, [showGraphPresets]);
+
+  const loadBackendPresets = async () => {
+    setLoadingPresets(true);
+    try {
+      // Frontend GRAPH_PRESETS (3 demo presets)
+      const frontendPresetList = GRAPH_PRESETS.map((p, idx) => ({
+        id: `frontend_${idx}`,
+        name: p.name,
+        description: p.description,
+        category: p.category,
+        node_count: p.nodes.length,
+        connection_count: p.connections?.length || 0,
+        tags: [],
+        _frontendPreset: p,
+        _isJsonPreset: false
+      }));
+
+      // All 16 JSON presets directly imported
+      const jsonPresetList = JSON_PRESETS.map((p: any) => ({
+        id: p.id,
+        name: p.name,
+        description: p.description,
+        category: p.category,
+        tags: p.tags || [],
+        node_count: p.nodes?.length || 0,
+        connection_count: p.connections?.length || 0,
+        _frontendPreset: null,
+        _jsonPreset: p,
+        _isJsonPreset: true
+      }));
+
+      // Merge: 3 frontend presets + 16 JSON presets = 19 total
+      setBackendPresets([...frontendPresetList, ...jsonPresetList]);
+    } catch (error) {
+      console.error('Failed to load presets:', error);
+    } finally {
+      setLoadingPresets(false);
+    }
+  };
   // Save to localStorage whenever nodes or connections change
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -117,23 +375,238 @@ export const NodeGraphSimple: React.FC = () => {
     }
   }, []);
 
-  const handleAddNode = useCallback((preset: NodePreset) => {
-    const newNode: Node = {
-      id: `node-${Date.now()}`,
-      preset,
-      x: 100 + nodes.length * 50,
-      y: 100 + (nodes.length % 3) * 150,
-      config: { ...preset.config },
+  const handleAddNode = useCallback(async (preset: NodePreset) => {
+    const currentNodes = nodesRef.current;
+    const fallbackPosition = {
+      x: 100 + currentNodes.length * 50,
+      y: 100 + (currentNodes.length % 3) * 150,
     };
-    setNodes(prev => [...prev, newNode]);
-    setShowPresets(false);
-  }, [nodes.length]);
 
-  const handleDeleteNode = useCallback((nodeId: string) => {
-    setNodes(prev => prev.filter(n => n.id !== nodeId));
-    setConnections(prev => prev.filter(c => c.fromNodeId !== nodeId && c.toNodeId !== nodeId));
-    if (selectedNode === nodeId) setSelectedNode(null);
-  }, [selectedNode]);
+    try {
+      const response = await fetch(`${API_BASE}/node/add`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          position: [fallbackPosition.x, fallbackPosition.y],
+          config: preset.config ?? {},
+          chain: [],
+          initial_perturbation: preset.config?.initial_perturbation ?? 0.1,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        notify.error(`Failed to create node: ${errorText}`);
+        return;
+      }
+
+      const result: NodeResponsePayload = await response.json();
+      const backendNode = (result.data?.node ?? null) as BackendNodePayload | null;
+      const backendId = backendNode?.node_id ?? result.node_id ?? null;
+
+      const { x, y } = backendNode
+        ? extractPosition(backendNode.position, fallbackPosition.x, fallbackPosition.y)
+        : fallbackPosition;
+
+      const config = backendNode
+        ? { ...preset.config, ...backendNode.config }
+        : { ...preset.config };
+
+      const localIdBase = backendId != null ? `node-${backendId}` : `node-${Date.now()}`;
+      let localId = localIdBase;
+      if (nodesRef.current.some((node) => node.id === localId)) {
+        localId = `${localIdBase}-${Date.now()}`;
+      }
+
+      if (typeof backendId === 'number') {
+        pendingBackendIdsRef.current.add(backendId);
+      }
+
+      setNodes((prev) => [...prev, {
+        id: localId,
+        preset,
+        x,
+        y,
+        config,
+        backendId: backendId ?? undefined,
+      }]);
+
+      setShowNodeModal(false);
+
+      if (preset.category === 'THRML' || preset.type === 'thrml') {
+        const processorId = backendId != null ? String(backendId) : localId;
+        try {
+          const procResponse = await fetch(`${API_BASE}/processor/create`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              node_id: processorId,
+              processor_type: 'thrml',
+              nodes: preset.config?.nodes || 64,
+              temperature: preset.config?.temperature || 1.0,
+              gibbs_steps: preset.config?.gibbs_steps || 5,
+              config: preset.config,
+            }),
+          });
+
+          if (!procResponse.ok) {
+            const errorText = await procResponse.text();
+            console.warn('Failed to create THRML processor on backend:', errorText);
+            notify.error(`THRML processor creation failed: ${errorText}`);
+          } else {
+            const data = await procResponse.json();
+            console.log('THRML processor created on backend:', data);
+            notify.success(`THRML processor created: ${data.n_nodes} nodes at T=${data.temperature}`);
+          }
+        } catch (error: any) {
+          console.error('Error creating THRML processor:', error);
+          notify.error(`Failed to connect to backend for THRML processor: ${error.message}`);
+        }
+      } else {
+        notify.success(result.message ?? `Node created successfully!${backendId != null ? ` ID: ${backendId}` : ''}`);
+      }
+    } catch (error) {
+      console.error('Failed to create node:', error);
+      notify.error('Error creating node');
+    }
+  }, [setNodes, setShowNodeModal]);
+
+  const handleLoadGraphPreset = useCallback((graphPreset: GraphPreset) => {
+    // Clear existing nodes and connections
+    setNodes([]);
+    setConnections([]);
+
+    // Create nodes from preset
+    const newNodes: Node[] = graphPreset.nodes.map((nodeData, index) => {
+      const preset = NODE_PRESETS[nodeData.presetKey]?.[nodeData.presetIndex];
+      if (!preset) {
+        console.error(`Preset not found: ${nodeData.presetKey}[${nodeData.presetIndex}]`);
+        return null;
+      }
+      return {
+        id: `node-${Date.now()}-${index}`,
+        preset,
+        x: nodeData.x,
+        y: nodeData.y,
+        config: { ...preset.config, ...nodeData.config },
+      };
+    }).filter(Boolean) as Node[];
+
+    setNodes(newNodes);
+
+    // Create connections after a short delay to ensure nodes are rendered
+    setTimeout(() => {
+      if (graphPreset.connections) {
+        const newConnections: Connection[] = graphPreset.connections.map((conn, index) => {
+          const fromNode = newNodes[conn.fromNode];
+          const toNode = newNodes[conn.toNode];
+          if (!fromNode || !toNode) return null;
+
+          return {
+            id: `conn-${Date.now()}-${index}`,
+            fromNodeId: fromNode.id,
+            fromPort: fromNode.preset.outputs[conn.fromPort]?.name || '',
+            fromPortIndex: conn.fromPort,
+            toNodeId: toNode.id,
+            toPort: toNode.preset.inputs[conn.toPort]?.name || '',
+            toPortIndex: conn.toPort,
+          };
+        }).filter(Boolean) as Connection[];
+
+        setConnections(newConnections);
+      }
+    }, 100);
+
+    setShowGraphPresets(false);
+  }, []);
+
+  const handleLoadBackendPreset = useCallback(async (presetId: string) => {
+    try {
+      // Fetch full preset from backend
+      const response = await fetch(`${API_BASE}/api/presets/${presetId}`);
+      if (!response.ok) {
+        console.error(`Failed to load preset ${presetId}`);
+        return;
+      }
+
+      const fullPreset = await response.json();
+      console.log('Loaded backend preset:', fullPreset);
+
+      // Clear existing graph
+      setNodes([]);
+      setConnections([]);
+
+      // Map backend nodes to frontend node format
+      // Note: This is a simplified mapping - would need to match backend node types to frontend NODE_PRESETS
+      const newNodes: Node[] = fullPreset.nodes.map((backendNode: any, index: number) => {
+        // Try to find matching preset in NODE_PRESETS based on node type
+        // For now, use a default preset - this needs proper mapping logic
+        const defaultPreset = NODE_PRESETS.oscillators[0]; // Fallback
+
+        return {
+          id: backendNode.id || `node-${Date.now()}-${index}`,
+          preset: defaultPreset,
+          x: backendNode.position?.x || 100 + index * 200,
+          y: backendNode.position?.y || 100,
+          config: { ...defaultPreset.config, ...backendNode.config },
+        };
+      });
+
+      setNodes(newNodes);
+
+      // Note: Backend connections use different format - would need proper parsing
+      // For now, skip connections - needs implementation
+
+      setShowGraphPresets(false);
+    } catch (error) {
+      console.error('Failed to load backend preset:', error);
+    }
+  }, []);
+
+  const handleDeleteNode = useCallback(async (nodeId: string) => {
+    const node = nodesRef.current.find((n) => n.id === nodeId);
+    const backendId = node?.backendId;
+
+    if (typeof backendId === 'number') {
+      pendingBackendIdsRef.current.delete(backendId);
+    }
+
+    setNodes((prev) => prev.filter((n) => n.id !== nodeId));
+    setConnections((prev) => prev.filter((c) => c.fromNodeId !== nodeId && c.toNodeId !== nodeId));
+    if (selectedNode === nodeId) {
+      setSelectedNode(null);
+    }
+
+    if (typeof backendId === 'number') {
+      try {
+        const response = await fetch(`${API_BASE}/node/${backendId}`, {
+          method: 'DELETE',
+        });
+
+        if (!response.ok) {
+          console.error('Failed to delete backend node:', await response.text());
+        }
+      } catch (error) {
+        console.error('Error deleting backend node:', error);
+      }
+    }
+
+    if (node && (node.preset.category === 'THRML' || node.preset.type === 'thrml')) {
+      const processorId = typeof backendId === 'number' ? String(backendId) : nodeId;
+      try {
+        const response = await fetch(`${API_BASE}/processor/${encodeURIComponent(processorId)}`, {
+          method: 'DELETE',
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          console.log('Processor instance deleted:', data);
+        }
+      } catch (error) {
+        console.error('Error deleting processor instance:', error);
+      }
+    }
+  }, [selectedNode, setSelectedNode]);
 
   const startWireDrag = useCallback((
     nodeId: string,
@@ -261,21 +734,22 @@ export const NodeGraphSimple: React.FC = () => {
         : n
     ));
 
-    // Extract node index from nodeId (format: "node-{timestamp}")
     const node = nodes.find(n => n.id === nodeId);
     if (!node) return;
 
-    // Find the node's index in the simulation
-    const nodeIndex = nodes.indexOf(node);
-    if (nodeIndex === -1) return;
+    const backendId = node.backendId;
+    if (backendId == null) {
+      console.warn(`Skipping backend update for ${nodeId} – no backendId is associated yet.`);
+      return;
+    }
 
     // Send update to backend
     try {
-      const response = await fetch('http://localhost:8000/node/update', {
+      const response = await fetch(`${API_BASE}/node/update`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          node_ids: [nodeIndex],
+          node_ids: [backendId],
           config_updates: { [configKey]: value }
         })
       });
@@ -336,13 +810,18 @@ export const NodeGraphSimple: React.FC = () => {
     const VisualizerComponent = isVisualizer ? VisualizerComponents[node.preset.name] : null;
     const nodeWidth = isVisualizer ? (node.config.width || 300) : 180;
     const isSelected = selectedNode === node.id;
+    const isActive = activeNodes.has(node.id);
+    const isStubNode = STUB_NODE_TYPES.has(node.preset.type);
+    const hasBackendId = typeof node.backendId === 'number';
 
     return (
       <div
         key={node.id}
         className={`absolute bg-black/60 border rounded transition ${isSelected
           ? 'border-[#00ff99] shadow-[0_0_10px_rgba(88,166,255,0.3)]'
-          : 'border-[#00cc77] hover:border-[#00ff99]'
+          : isActive
+            ? 'border-[#00ff99] shadow-[0_0_15px_rgba(0,255,153,0.4)] animate-pulse'
+            : 'border-[#00cc77] hover:border-[#00ff99]'
           }`}
         style={{ left: node.x, top: node.y, width: nodeWidth, cursor: 'move' }}
         onMouseDown={(e) => handleMouseDown(e, node.id)}
@@ -364,13 +843,22 @@ export const NodeGraphSimple: React.FC = () => {
               <div className="text-xs text-[#00ff99] font-semibold">
                 {node.preset.name}
               </div>
+              {isStubNode && (
+                <div className="text-[8px] text-[#f85149] uppercase tracking-wide">Stub – backend execution pending</div>
+              )}
+              {hasBackendId && (
+                <div className="text-[8px] text-[#00ff99]/70 uppercase tracking-wide">Backend #{node.backendId}</div>
+              )}
             </div>
-            {/* THRML Signal Indicator */}
-            {node.preset.type === 'thrml' && (
-              <div
-                className="w-2 h-2 rounded-full bg-[#f85149] thrml-signal-pulse"
-                title="THRML node active"
-              />
+            {/* Activity Indicator - only shows when node is actively processing data */}
+            {isActive && (
+              <div className="flex items-center gap-1">
+                <div
+                  className="w-2 h-2 rounded-full bg-[#00ff99] animate-pulse"
+                  title="Node actively processing data"
+                />
+                <span className="text-[8px] text-[#00ff99] font-bold">LIVE</span>
+              </div>
             )}
           </div>
 
@@ -733,7 +1221,13 @@ export const NodeGraphSimple: React.FC = () => {
         <h2 className="text-sm font-semibold text-[#00ff99] uppercase tracking-wide">Node Graph</h2>
         <div className="flex gap-2">
           <button
-            onClick={() => setShowPresets(!showPresets)}
+            onClick={() => setShowGraphPresets(!showGraphPresets)}
+            className="px-3 py-1.5 text-xs bg-[#1a1a1a] border border-[#00cc77] text-[#00ff99] rounded hover:bg-[#00cc77]/20 transition font-semibold"
+          >
+            Load Preset
+          </button>
+          <button
+            onClick={() => setShowNodeModal(!showNodeModal)}
             className="px-3 py-1.5 text-xs bg-[#00cc77] text-black rounded hover:bg-[#00ff99] transition font-semibold"
           >
             + Add Node
@@ -750,38 +1244,50 @@ export const NodeGraphSimple: React.FC = () => {
         </div>
       </div>
 
-      {/* Preset Modal */}
-      {showPresets && (
+      {/* Add Node Modal */}
+      {showNodeModal && (
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/35 backdrop-blur-sm">
-          <div className="w-[700px] max-h-[85vh] bg-black/60 border border-[#00cc77] rounded-lg shadow-2xl overflow-hidden">
-            <div className="flex items-center justify-between px-4 py-3 border-b border-[#00cc77]">
+          <div className="w-[700px] max-h-[70vh] bg-black/60 border border-[#00cc77] rounded-lg shadow-2xl overflow-hidden flex flex-col">
+            {/* Fixed Header */}
+            <div className="flex items-center justify-between px-4 py-3 border-b border-[#00cc77] flex-shrink-0">
               <h3 className="text-sm font-semibold text-[#00ff99]">Add Node</h3>
               <button
-                onClick={() => setShowPresets(false)}
+                onClick={() => setShowNodeModal(false)}
                 className="text-[#00cc77] hover:text-[#00ff99] text-xl"
               >
                 ×
               </button>
             </div>
 
-            {/* Category Tabs */}
-            <div className="flex border-b border-[#00cc77] bg-black">
-              {Object.keys(NODE_PRESETS).map(category => (
-                <button
-                  key={category}
-                  onClick={() => setPresetCategory(category)}
-                  className={`px-4 py-2 text-xs font-semibold uppercase transition ${presetCategory === category
-                    ? 'text-[#00ff99] border-b-2 border-[#00ff99]'
-                    : 'text-[#00cc77] hover:text-[#00ff99]'
-                    }`}
-                >
-                  {category}
-                </button>
-              ))}
+            {/* Fixed Category Tabs */}
+            <div
+              className="overflow-x-auto border-b border-[#00cc77] bg-black custom-scrollbar flex-shrink-0"
+              onWheel={(e) => {
+                // Enable horizontal scrolling with mouse wheel
+                if (e.currentTarget.scrollWidth > e.currentTarget.clientWidth) {
+                  e.preventDefault();
+                  e.currentTarget.scrollLeft += e.deltaY;
+                }
+              }}
+            >
+              <div className="flex min-w-max">
+                {Object.keys(NODE_PRESETS).map(category => (
+                  <button
+                    key={category}
+                    onClick={() => setPresetCategory(category)}
+                    className={`px-4 py-2 text-xs font-semibold uppercase transition whitespace-nowrap ${presetCategory === category
+                      ? 'text-[#00ff99] border-b-2 border-[#00ff99]'
+                      : 'text-[#00cc77] hover:text-[#00ff99]'
+                      }`}
+                  >
+                    {category}
+                  </button>
+                ))}
+              </div>
             </div>
 
-            {/* Preset Grid */}
-            <div className="p-4 overflow-y-auto max-h-[600px] custom-scrollbar">
+            {/* Scrollable Node Grid - Fixed height */}
+            <div className="overflow-y-auto custom-scrollbar p-4" style={{ height: '500px' }}>
               <div className="grid grid-cols-2 gap-3">
                 {NODE_PRESETS[presetCategory]?.map((preset, idx) => (
                   <button
@@ -819,6 +1325,82 @@ export const NodeGraphSimple: React.FC = () => {
         </div>
       )}
 
+      {/* Load Graph Preset Modal */}
+      {showGraphPresets && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/35 backdrop-blur-sm">
+          <div className="w-[700px] h-[85vh] bg-black/60 border border-[#00cc77] rounded-lg shadow-2xl overflow-hidden flex flex-col">
+            {/* Fixed Header */}
+            <div className="flex items-center justify-between px-4 py-3 border-b border-[#00cc77] flex-shrink-0">
+              <h3 className="text-sm font-semibold text-[#00ff99]">Load Preset Configuration</h3>
+              <button
+                onClick={() => setShowGraphPresets(false)}
+                className="text-[#00cc77] hover:text-[#00ff99] text-xl"
+              >
+                ×
+              </button>
+            </div>
+
+            {/* Scrollable Preset Grid */}
+            <div className="flex-1 overflow-y-auto custom-scrollbar p-4">
+              {loadingPresets ? (
+                <div className="flex items-center justify-center h-full">
+                  <div className="text-[#00ff99] text-sm">Loading presets...</div>
+                </div>
+              ) : backendPresets.length === 0 ? (
+                <div className="flex items-center justify-center h-full">
+                  <div className="text-[#00cc77] text-sm">No presets available</div>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 gap-3">
+                  {backendPresets.map((preset, idx) => (
+                    <button
+                      key={preset.id || idx}
+                      onClick={() => {
+                        if (preset._frontendPreset) {
+                          handleLoadGraphPreset(preset._frontendPreset);
+                        } else if (preset._jsonPreset) {
+                          handleLoadGraphPreset(preset._jsonPreset);
+                        } else {
+                          handleLoadBackendPreset(preset.id);
+                        }
+                      }}
+                      className="text-left p-4 bg-black/60 backdrop-blur-md border border-[#00cc77] rounded hover:border-[#00ff99] transition group"
+                    >
+                      <div className="flex items-start justify-between mb-2">
+                        <div className="text-base font-semibold text-[#00ff99] group-hover:text-[#00ff99]">
+                          {preset.name}
+                        </div>
+                        <div className="text-[10px] px-2 py-0.5 rounded bg-[#a371f7]/20 text-[#a371f7]">
+                          {preset.category}
+                        </div>
+                      </div>
+                      <div className="text-xs text-[#00cc77] mb-2">{preset.description}</div>
+                      <div className="flex items-center gap-4 text-[10px]">
+                        <div className="text-[#00ff99]">
+                          {preset.node_count} nodes
+                        </div>
+                        <div className="text-[#00ff99]">
+                          {preset.connection_count} connections
+                        </div>
+                        {preset.tags && (
+                          <div className="flex gap-1 ml-auto">
+                            {preset.tags.slice(0, 3).map((tag: string) => (
+                              <span key={tag} className="px-1.5 py-0.5 bg-[#00cc77]/20 text-[#00cc77] rounded text-[9px]">
+                                {tag}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Canvas */}
       <div
         className="flex-1 relative overflow-auto custom-scrollbar"
@@ -840,6 +1422,13 @@ export const NodeGraphSimple: React.FC = () => {
                 <feMergeNode in="SourceGraphic" />
               </feMerge>
             </filter>
+            {/* Animated dashed pattern for signal flow */}
+            <pattern id="signalFlow" patternUnits="userSpaceOnUse" width="20" height="2">
+              <line x1="0" y1="1" x2="10" y2="1" stroke="#00ff99" strokeWidth="2" opacity="0.8">
+                <animate attributeName="x1" from="0" to="20" dur="1s" repeatCount="indefinite" />
+                <animate attributeName="x2" from="10" to="30" dur="1s" repeatCount="indefinite" />
+              </line>
+            </pattern>
           </defs>
 
           {/* Render existing connections */}
@@ -860,10 +1449,15 @@ export const NodeGraphSimple: React.FC = () => {
 
             const isHovered = hoveredConnection === conn.id;
 
+            const pathId = `path-${conn.id}`;
+            const pathD = `M ${fromPos.x} ${fromPos.y} C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${toPos.x} ${toPos.y}`;
+
             return (
               <g key={conn.id}>
+                {/* Main connection path */}
                 <path
-                  d={`M ${fromPos.x} ${fromPos.y} C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${toPos.x} ${toPos.y}`}
+                  id={pathId}
+                  d={pathD}
                   stroke={isHovered ? "#f85149" : "#00ff99"}
                   strokeWidth={isHovered ? "3" : "2"}
                   fill="none"
@@ -880,6 +1474,23 @@ export const NodeGraphSimple: React.FC = () => {
                     });
                   }}
                 />
+                {/* Animated signal dots - ONLY when THIS specific connection has active data flow */}
+                {activeConnections.has(conn.id) && [0, 0.33, 0.66].map((offset, i) => (
+                  <circle
+                    key={`signal-${i}`}
+                    r="3"
+                    fill="#00ff99"
+                    opacity="0.9"
+                    filter="url(#glow)"
+                  >
+                    <animateMotion
+                      dur="2s"
+                      repeatCount="indefinite"
+                      begin={`${offset * 2}s`}
+                      path={pathD}
+                    />
+                  </circle>
+                ))}
               </g>
             );
           })}

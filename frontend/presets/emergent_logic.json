@@ -1,0 +1,246 @@
+{
+  "id": "emergent_logic",
+  "name": "Emergent Computation Discovery",
+  "version": "1.0",
+  "description": "Watch Boolean logic gates emerge from chaos. This preset demonstrates how computational primitives (AND, OR, XOR, NAND gates) can spontaneously arise from the collective behavior of chaotic oscillators coupled through thermodynamic sampling.",
+  "category": "AI/ML",
+  "tags": ["emergent", "computation", "logic", "chaos", "thrml", "discovery"],
+  "author": "GMCS Team",
+  "created": "2025-10-31",
+  
+  "documentation": {
+    "overview": "This preset creates a network of 1024 Chua oscillators whose interactions are governed by THRML energy-based sampling. A pattern recognizer analyzes the collective behavior to detect Boolean logic operations emerging without explicit programming.",
+    "expectedBehavior": "After 10-30 seconds, you should see specific oscillator groups begin to exhibit AND, OR, XOR, or NAND gate behavior. The logic gate detector will highlight these regions and track their stability over time.",
+    "parameters": {
+      "oscillator_coupling": "Controls how strongly oscillators influence each other (0.1-0.5 recommended)",
+      "thrml_temperature": "Higher = more exploration, Lower = more structure (0.5-2.0 recommended)",
+      "detection_threshold": "Minimum confidence to report detected logic (0.7-0.95 recommended)"
+    },
+    "successMetrics": [
+      "At least 3 distinct logic gates detected",
+      "Gate stability > 80% over 5 second window",
+      "Clear separation in phase space visualization"
+    ]
+  },
+
+  "nodes": [
+    {
+      "id": "osc_array",
+      "type": "oscillator",
+      "name": "Chua Oscillator Array",
+      "position": {"x": 100, "y": 200},
+      "config": {
+        "count": 1024,
+        "alpha": 15.6,
+        "beta": 28.0,
+        "m0": -1.143,
+        "m1": -0.714,
+        "initial_state": "random",
+        "enable_coupling": true,
+        "coupling_strength": 0.2
+      }
+    },
+    {
+      "id": "thrml_sampler",
+      "type": "thrml",
+      "name": "THRML Energy Sampler",
+      "position": {"x": 400, "y": 200},
+      "config": {
+        "num_nodes": 1024,
+        "node_type": "continuous",
+        "temperature": 1.0,
+        "num_samples": 10,
+        "num_chains": 4,
+        "mode": "RESEARCH"
+      }
+    },
+    {
+      "id": "pattern_recognizer",
+      "type": "analysis",
+      "name": "Pattern Recognizer",
+      "position": {"x": 700, "y": 150},
+      "config": {
+        "window_size": 200,
+        "threshold": 0.85,
+        "num_patterns": 20
+      }
+    },
+    {
+      "id": "logic_gate_detector",
+      "type": "ml",
+      "name": "Logic Gate Detector",
+      "position": {"x": 700, "y": 300},
+      "config": {
+        "type": "CNN Classifier",
+        "channels": [32, 64],
+        "kernel_size": 5,
+        "output_classes": 4,
+        "class_names": ["AND", "OR", "XOR", "NAND"]
+      }
+    },
+    {
+      "id": "feedback_controller",
+      "type": "control",
+      "name": "Adaptive Temperature Controller",
+      "position": {"x": 1000, "y": 200},
+      "config": {
+        "type": "PID Controller",
+        "Kp": 0.5,
+        "Ki": 0.05,
+        "Kd": 0.02,
+        "setpoint": 0.75,
+        "output_limit": [0.3, 3.0]
+      }
+    },
+    {
+      "id": "phase_viz",
+      "type": "visualizer",
+      "name": "Phase Space Visualization",
+      "position": {"x": 400, "y": 450},
+      "config": {
+        "type": "3D Attractor",
+        "trail_length": 500,
+        "color_mode": "velocity",
+        "active": true
+      }
+    },
+    {
+      "id": "logic_viz",
+      "type": "visualizer",
+      "name": "Logic Gate Map",
+      "position": {"x": 1000, "y": 450},
+      "config": {
+        "type": "Grid Visualizer",
+        "grid_size": 32,
+        "color_scheme": "logic_class",
+        "update_rate": 100,
+        "width": 600,
+        "height": 600,
+        "active": true
+      }
+    },
+    {
+      "id": "metrics_display",
+      "type": "visualizer",
+      "name": "Detection Metrics",
+      "position": {"x": 700, "y": 600},
+      "config": {
+        "type": "Time Series",
+        "signals": ["gate_confidence", "pattern_count", "temperature"],
+        "history_length": 1000,
+        "active": true
+      }
+    }
+  ],
+
+  "connections": [
+    {
+      "from": "osc_array.x",
+      "to": "thrml_sampler.bias",
+      "description": "Oscillator X coordinates bias THRML sampling"
+    },
+    {
+      "from": "osc_array.y",
+      "to": "pattern_recognizer.signal",
+      "description": "Y coordinates analyzed for patterns"
+    },
+    {
+      "from": "thrml_sampler.samples",
+      "to": "osc_array.modulation",
+      "description": "THRML samples modulate oscillator coupling"
+    },
+    {
+      "from": "thrml_sampler.samples",
+      "to": "logic_gate_detector.time_series",
+      "description": "Collective states classified as logic operations"
+    },
+    {
+      "from": "pattern_recognizer.confidence",
+      "to": "feedback_controller.measurement",
+      "description": "Pattern confidence drives temperature adaptation"
+    },
+    {
+      "from": "feedback_controller.control",
+      "to": "thrml_sampler.temperature",
+      "description": "PID controls THRML temperature for optimal discovery"
+    },
+    {
+      "from": "osc_array.states",
+      "to": "phase_viz.data",
+      "description": "3D visualization of oscillator trajectories"
+    },
+    {
+      "from": "logic_gate_detector.class_probs",
+      "to": "logic_viz.states",
+      "description": "Logic gate classification displayed on grid"
+    },
+    {
+      "from": "logic_gate_detector.class_probs",
+      "to": "metrics_display.gate_confidence",
+      "description": "Track classification confidence over time"
+    },
+    {
+      "from": "pattern_recognizer.patterns",
+      "to": "metrics_display.pattern_count",
+      "description": "Track detected pattern count"
+    },
+    {
+      "from": "thrml_sampler.temperature",
+      "to": "metrics_display.temperature",
+      "description": "Track adaptive temperature"
+    }
+  ],
+
+  "initialState": {
+    "description": "Preset starts with random oscillator initial conditions and moderate THRML temperature. The system explores for ~10 seconds before structure emerges.",
+    "autoStart": true,
+    "warmupSteps": 100
+  },
+
+  "controls": {
+    "description": "User-adjustable parameters for exploring the system",
+    "parameters": [
+      {
+        "name": "oscillator_coupling",
+        "label": "Oscillator Coupling Strength",
+        "node": "osc_array",
+        "field": "config.coupling_strength",
+        "type": "slider",
+        "min": 0.0,
+        "max": 1.0,
+        "step": 0.05,
+        "default": 0.2
+      },
+      {
+        "name": "thrml_temp",
+        "label": "THRML Temperature",
+        "node": "thrml_sampler",
+        "field": "config.temperature",
+        "type": "slider",
+        "min": 0.1,
+        "max": 5.0,
+        "step": 0.1,
+        "default": 1.0
+      },
+      {
+        "name": "detection_threshold",
+        "label": "Logic Gate Detection Threshold",
+        "node": "logic_gate_detector",
+        "field": "config.threshold",
+        "type": "slider",
+        "min": 0.5,
+        "max": 0.99,
+        "step": 0.01,
+        "default": 0.85
+      }
+    ]
+  },
+
+  "requirements": {
+    "minGPUMemory": "4GB",
+    "recommendedGPUMemory": "8GB",
+    "jaxSupport": true,
+    "thrmlSupport": true
+  }
+}
+

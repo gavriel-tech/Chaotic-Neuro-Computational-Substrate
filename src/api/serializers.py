@@ -17,7 +17,7 @@ from jax import image
 from src.core.state import SystemState, N_MAX
 
 
-_HEADER_STRUCT = struct.Struct("<7If")
+_HEADER_STRUCT = struct.Struct("<8If")
 _FLAG_COMPRESSED = 1 << 0
 
 
@@ -48,16 +48,19 @@ def serialize_for_frontend(
     compression: str = "auto",
     max_nodes: int | None = 512,
     mask_threshold: float = 0.1,
+    simulation_running: bool = False,
 ) -> bytes:
     """Serialize state into an optimised binary packet for WebSocket streaming.
 
-    Packet header is 7 × uint32 (little-endian):
+    Packet header is 8 × uint32 + 1 × float32 (little-endian):
         - downsampled width/height
         - active node count
         - total capacity (N_MAX)
         - flags (bit0: payload compressed)
         - uncompressed payload size (bytes)
         - stored payload size (bytes)
+        - simulation running flag (0/1)
+        - simulation time (seconds)
 
     Payload layout (uncompressed):
         - Field data    : float32[down_w * down_h]
@@ -137,6 +140,7 @@ def serialize_for_frontend(
         flags,
         uncompressed_size,
         len(payload),
+        int(bool(simulation_running)),
         float(state.t[0] if state.t.ndim else state.t),
     )
 
@@ -149,20 +153,32 @@ def deserialize_packet_info(packet: bytes) -> dict:
     if len(packet) < _HEADER_STRUCT.size:
         raise ValueError(f"Packet too short: {len(packet)} bytes")
 
-    down_w, down_h, active_count, total_capacity, flags, payload_size, stored_size, sim_time = _HEADER_STRUCT.unpack_from(
-        packet
-    )
+    (
+        down_w,
+        down_h,
+        active_count,
+        total_capacity,
+        flags,
+        payload_size,
+        stored_size,
+        running_flag,
+        sim_time,
+    ) = _HEADER_STRUCT.unpack_from(packet)
 
     return {
         "down_w": int(down_w),
         "down_h": int(down_h),
         "active_count": int(active_count),
         "capacity": int(total_capacity),
+        "n_osc": int(total_capacity),  # Alias for capacity (expected by tests)
+        "n_pos": int(total_capacity),  # Number of available positions = capacity (not active_count)
         "compressed": bool(flags & _FLAG_COMPRESSED),
         "payload_size": int(payload_size),
         "stored_size": int(stored_size),
         "packet_size": len(packet),
+        "simulation_running": bool(running_flag),
         "simulation_time": float(sim_time),
+        "valid": True,  # Always true if packet was successfully parsed
     }
 
 
@@ -170,7 +186,7 @@ def get_javascript_deserializer() -> str:
     """Generate reference JavaScript for deserialising the binary packet."""
 
     return """
-const HEADER_UINT32_COUNT = 7;
+const HEADER_UINT32_COUNT = 8;
 const HEADER_FLOAT_COUNT = 1;
 const HEADER_BYTES = (HEADER_UINT32_COUNT + HEADER_FLOAT_COUNT) * 4;
 const FLAG_COMPRESSED = 1 << 0;
@@ -184,7 +200,8 @@ function deserializeBinaryPacket(arrayBuffer) {
     const flags = header.getUint32(4 * 4, true);
     const payloadSize = header.getUint32(5 * 4, true);
     const storedSize = header.getUint32(6 * 4, true);
-    const simTime = header.getFloat32(7 * 4, true);
+    const running = header.getUint32(7 * 4, true) !== 0;
+    const simTime = header.getFloat32(8 * 4, true);
 
     let payload = new Uint8Array(arrayBuffer, HEADER_BYTES, storedSize);
     if (flags & FLAG_COMPRESSED) {
@@ -216,6 +233,7 @@ function deserializeBinaryPacket(arrayBuffer) {
         positions: new Float32Array(positions),
         mask: new Float32Array(mask),
         simTime,
+        simulationRunning: running,
     };
 }
 """
@@ -249,3 +267,75 @@ def estimate_bandwidth(
         "bandwidth_mbps": (bytes_per_second * 8) / (1024 * 1024),
     }
 
+
+def compute_packet_size(
+    down_w: int,
+    down_h: int,
+    active_nodes: Optional[int] = None
+) -> int:
+    """
+    Compute total packet size for a given resolution and node count.
+    
+    Matches the actual packet structure from serialize_for_frontend():
+    - Header: 8 uint32 + 1 float = 36 bytes
+    - Field: down_w * down_h * float32 = down_w * down_h * 4 bytes
+    - Oscillator states: active_nodes * 3 * float32 = active_nodes * 12 bytes
+    - Positions: active_nodes * 3 * float32 = active_nodes * 12 bytes
+    - Mask: active_nodes * float32 = active_nodes * 4 bytes
+    
+    Args:
+        down_w: Width of downsampled field
+        down_h: Height of downsampled field
+        active_nodes: Number of active nodes (optional, defaults to 0)
+        
+    Returns:
+        Total packet size in bytes
+    """
+    # Header size: 8 uint32 + 1 float
+    header_size = _HEADER_STRUCT.size  # 36 bytes
+    
+    # Field data: float32 per pixel
+    field_size = down_w * down_h * 4
+    
+    # Node data (if active_nodes specified)
+    if active_nodes is None:
+        active_nodes = 0  # Default to empty state like tests use
+    
+    # Oscillator states: 3 float32 per node (x, y, z)
+    osc_size = active_nodes * 3 * 4
+    
+    # Positions: 3 float32 per node (x, y=0, z)
+    pos_size = active_nodes * 3 * 4
+    
+    # Mask: 1 float32 per node
+    mask_size = active_nodes * 4
+    
+    total_size = header_size + field_size + osc_size + pos_size + mask_size
+    
+    return total_size
+
+
+def get_adaptive_downsample_resolution(client_count: int) -> Tuple[int, int]:
+    """
+    Get adaptive resolution based on number of connected clients.
+    
+    Reduces resolution as more clients connect to manage bandwidth.
+    
+    Args:
+        client_count: Number of connected clients
+        
+    Returns:
+        Tuple of (width, height) for downsampling
+    """
+    if client_count <= 1:
+        # Single client: full resolution
+        return (256, 256)
+    elif client_count <= 5:
+        # Few clients: half resolution
+        return (128, 128)
+    elif client_count <= 15:
+        # Many clients: quarter resolution
+        return (64, 64)
+    else:
+        # Very many clients: minimal resolution
+        return (32, 32)

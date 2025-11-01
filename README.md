@@ -2,13 +2,15 @@
 
 A GPU-accelerated platform for chaotic-neuro computation, real-time audio-reactive simulation, and energy-based machine learning.
 
-![GMCS Interface](docs/images/Screenshot%202025-10-30%20105601.png)
+![GMCS Interface](docs/images/Screenshot%202025-11-01%20133848.png)
+
+![GMCS Node Graph](docs/images/Screenshot%202025-11-01%20134332.png)
 
 License: MIT | Python 3.10+ | JAX GPU Accelerated | Next.js 14 | THRML Integrated
 
-**Status:** Under active development. We are still troubleshooting major systems and APIs, so expect rapid changes and occasional instability.
+**Status:** Active development. THRML-backed simulation, node graph, and benchmarking pipelines are operational. Current focus: broadening node coverage, polishing advanced THRML controls, and production hardening.
 
-**THRML Notice:** The THRML simulator integration remains under active troubleshooting; live sampling, energy metrics, and p-bit visuals may be intermittent.
+**Codebase size:** ~78K LOC (≈52K Python backend, ≈27K TypeScript/React frontend, excluding vendored docs)
 
 ---
 
@@ -33,34 +35,92 @@ Simulation - Complex system modeling and emergent behavior studies
 
 ---
 
+## ML + Gradient Integration
+
+Chaos-gradient hybrid platform with end-to-end ML integration.
+
+### Comprehensive ML Capabilities
+- **Differentiable Chaos** - Gradients through oscillator dynamics using JAX
+- **12 Pre-Implemented Model Architectures** - Model definitions for various domains (training in progress)
+- **Hybrid Training** - Combined chaos exploration with gradient optimization
+- **Model Zoo** - Pre-registered models with HuggingFace Hub integration
+- **Model Registry** - Centralized model management with metadata tracking
+- **Gradient Flow Graph** - Mix differentiable and non-differentiable nodes
+- **Unified Trainer** - Supports all model types with callbacks and validation
+- **15+ Loss Functions** - Chaos-specific (Lyapunov, attractor distance, energy) plus standard ML losses
+
+### Implemented ML Models
+**Music & Audio:**
+- GenreClassifier - CNN for 10-genre music classification
+- MusicTransformer - Transformer encoder for music embeddings
+
+**Reinforcement Learning:**
+- PPOAgent - Actor-critic policy learning with PPO
+- ValueFunction - State value estimation for RL
+
+**Generative Models:**
+- PixelArtGAN - GAN for 32x32 pixel art generation
+- CodeGenerator - Transformer for source code generation
+
+**Scientific Computing:**
+- LogicGateDetector - CNN for logic gate classification (AND, OR, XOR, NAND)
+- PerformancePredictor - MLP for neural architecture performance prediction
+- EfficiencyPredictor - MLP for solar cell efficiency prediction
+- CognitiveStateDecoder - CNN for brain state classification (5 classes)
+- BindingPredictor - MLP for molecular binding affinity prediction
+- MLPerformanceSelector - Multi-output MLP for algorithm performance metrics
+
+### Quick Start (Backend)
+```python
+# Differentiable chaos with gradients
+from src.core.differentiable_chua import DifferentiableChuaOptimizer
+optimizer = DifferentiableChuaOptimizer(params, lr=0.01)
+optimizer.train(initial_state, target_trajectory, forcing, dt, loss_fn, 100)
+
+# Use model architectures (training in progress)
+from src.ml.concrete_models import GenreClassifier
+classifier = GenreClassifier("genre_model", config)
+predictions = classifier.forward(spectrogram_features)
+
+# Hybrid chaos-gradient training
+from src.ml.hybrid_training import HybridTrainer
+trainer = HybridTrainer(oscillator, ml_model, config)
+history = trainer.train(data_generator, n_steps=1000)
+```
+
+For examples, see `examples/ml/` directory.
+
+---
+
 ## Key Features
 
 ### Node-Based Visual Interface
 Modular Node Graph - Visual programming interface for building computational pipelines  
-20+ Node Types - Oscillators, algorithms, THRML models, P-bit dynamics, and visualizers  
+77 Node Types - Oscillators, algorithms, THRML models, P-bit dynamics, ML models, analysis tools, and visualizers  
+26 Presets - Pre-configured systems for music, cryptography, ML, neuroscience, visualization, and more  
 Embedded Visualizers - Real-time oscilloscopes, spectrograms, phase space plots, energy graphs, P-bit mapper  
 Drag-and-Drop - Intuitive node placement and connection routing  
 Live Configuration - Real-time parameter editing with instant feedback  
 Professional Theme - Clean Linux-inspired dark interface
-
 ### Core System
 1024 Chaotic Oscillators (Chua circuits) with real-time dynamics  
 3D Wave Field (256×256 FDTD PDE) with complex-valued support for photonics  
 21 GMCS Algorithms (7 basic, 7 audio/signal, 7 photonic)  
-THRML Integration - Full energy-based model with block Gibbs sampling  
-Universal Modulation Matrix - Bidirectional routing between all components  
-Multi-GPU Support - JAX pmap parallelization  
-Real-time Audio - Pitch and RMS detection with audio reactivity
+THRML Integration - Block Gibbs sampling + CD learning with async rebuilds  
+Universal Modulation Matrix - Bidirectional routing between oscillators, THRML, audio, ML  
+Multi-GPU Support - JAX pmap parallelization (optional)  
+Real-time Audio - Pitch/RMS detection with modulation routes
 
 ### Advanced Features
-Higher-Order Interactions - 3-way and 4-way THRML coupling  
-Heterogeneous Nodes - Spin, continuous, and discrete node types  
-Conditional Sampling - Clamped nodes for targeted generation  
-Custom Energy Factors - Photonic, audio, ML regularization  
-Advanced Sampling - Adaptive, annealed, parallel tempering schedules  
-ML Integration - PyTorch, TensorFlow, HuggingFace support  
-Plugin System - Extensible architecture for custom algorithms  \
-Session Management - Save/load complete system state
+Higher-Order Interactions - 3-way/4-way THRML coupling  
+Heterogeneous Nodes - Spin, continuous, and categorical sampler backends  
+Conditional Sampling - Clamping via REST + THRML Advanced panels  
+Custom Energy Factors - Photonic, audio, ML regularization hooks  
+Advanced Sampling - Adaptive/annealed schedules, multi-chain CD-k  
+ML Integration - PyTorch, TensorFlow, HuggingFace support with 12 model architectures  
+Benchmarking Suite - THRML sampler and throughput diagnostics  
+Plugin System - Extensible algorithm/node registry  
+Persistence - Session save/load, checkpointing, API-driven state export
 
 ### Production Features
 80+ REST API Endpoints - Complete control via HTTP  
@@ -72,7 +132,7 @@ Full Documentation - API, algorithms, deployment guides
 
 ---
 
-## 21 GMCS Algorithms
+## GMCS Algorithms
 
 ### Basic Algorithms (0-6)
 | ID | Name | Description | Parameters |
@@ -123,6 +183,170 @@ These nodes enable fine-grained control over THRML energy landscapes, thermal no
 
 ---
 
+## Updated Node & THRML Integration (2025-11)
+
+- Frontend node actions now round-trip through `/node/add`, `/node/update`, `/node/{id}`, and `/nodes`, capturing backend-assigned IDs so the visual canvas matches the live simulation. The Control Panel removal button queries `/nodes` before issuing deletes.
+- THRML bridge nodes seed and advance their own PRNG keys, push bias updates into `THRMLWrapper`, and guard fallbacks if sampling fails. Advanced THRML endpoints (`/thrml/heterogeneous/configure`, `/thrml/clamp-nodes`, `/thrml/sample-conditional`) are wired to the `THRMLAdvancedPanels` UI.
+- Backend serialization (`_serialize_node`) returns position, oscillator state, GMCS parameters, and chain data, enabling topology reconciliation and HUD overlays. WebSocket frames continue to stream state updates at ~30 Hz.
+- Documentation across `ARCHITECTURE.md`, `CONTRIBUTING.md`, and other handbooks reflects the current workflows, testing expectations, and feature matrix.
+
+---
+
+## Available Presets
+
+The system includes 26 pre-configured presets demonstrating various applications:
+
+### Application Presets (16 JSON)
+
+#### Research & Science
+**Neural Sim** - Neural network simulation with THRML coupling  
+**Neuromapping** - EEG analysis and brain state decoding  
+**Quantum Opt** - Quantum optimization using chaotic dynamics  
+**Photonic Sim** - Optical computing simulation with photonic algorithms  
+**Molecular Design** - Molecular structure exploration and optimization  
+**Solar Opt** - Solar cell efficiency optimization
+
+#### Machine Learning
+**NAS Discovery** - Neural architecture search with chaotic exploration  
+**RL Boost** - Reinforcement learning with chaos-based exploration  
+**Emergent Logic** - Logic gate detection and emergent computation  
+**Game Code** - Code generation using chaos-gradient hybrid training
+
+#### Media & Creative
+**Live Music** - Real-time music analysis and synthesis  
+**Music Analysis** - Chord detection, beat tracking, and harmony analysis  
+**Live Video** - Video processing with chaotic effects  
+**Pixel Art** - Generative pixel art using GANs  
+**World Gen** - Procedural world generation
+
+#### Security
+**Chaos Crypto** - Complete chaos-based cryptography suite with encryption, hashing, and randomness testing
+
+### Graph Presets (10 In-Code)
+
+**Chaotic Attractor Visualization** - Lorenz attractor with 3D phase space and waveform visualizers  
+**THRML Spin Glass Experiment** - Spin Glass EBM with spin state matrix and correlation analysis  
+**Audio Processing Chain** - Chua oscillator through waveshaper, compressor, and spectrogram  
+**P-Bit Dynamics Exploration** - Spin Glass with P-Bit manipulation nodes  
+**Multi-Oscillator Synthesis** - Chua, Lorenz, and Van der Pol oscillators mixed together  
+**THRML Training Pipeline** - Ising model with training, moment accumulation, and convergence detection  
+**Photonic Processing** - Lorenz oscillator through optical Kerr effect and four-wave mixing  
+**ML Predictor Training** - Lorenz attractor feeding MLP predictor for time series forecasting  
+**Chaos Analysis Suite** - Chua oscillator with Lyapunov calculator, attractor analyzer, and FFT  
+**Feedback Control System** - Van der Pol oscillator with PID controller for stabilization
+
+Load application presets via API: `POST /presets/{preset_name}/load` or through the frontend preset browser.
+
+---
+
+## Node Types (77 Total)
+
+### System Nodes (2)
+**Audio Settings** - Audio I/O configuration and routing  
+**Sampler Config** - THRML sampler backend and blocking strategy configuration
+
+### Oscillators (3)
+**Chua Oscillator** - Classic chaotic oscillator with three equilibrium points  
+**Lorenz Attractor** - Atmospheric convection model with butterfly effect  
+**Van der Pol** - Non-conservative oscillator
+
+### Wave Processing (7)
+**Waveshaper** - Nonlinear waveshaping and harmonic distortion  
+**Resonator** - Resonant bandpass filter  
+**Hilbert Transform** - Phase shift and envelope extraction  
+**Compressor** - Dynamic range compression  
+**Limiter** - Hard limiting  
+**Expander** - Dynamic range expansion  
+**Gate** - Threshold gate with sidechain
+
+### Photonic Algorithms (2)
+**Optical Kerr Effect** - Nonlinear refractive index modulation  
+**Four-Wave Mixing** - Parametric wavelength conversion
+
+### P-Bit Dynamics (5)
+**P-Bit Compressor** - Probability distribution compression  
+**P-Bit Limiter** - Hard probability limits  
+**P-Bit Expander** - Thermal fluctuation amplification  
+**P-Bit Gate** - Threshold-based p-bit routing  
+**P-Bit Threshold** - Binary conversion with analog output
+
+### Energy-Based Models (4)
+**Spin Glass EBM** - Ising model with spin glass dynamics  
+**Continuous EBM** - Continuous-valued energy-based model  
+**Heterogeneous Model** - Mixed discrete and continuous nodes  
+**Categorical EBM** - Multi-class categorical distributions
+
+### THRML Sampling (11)
+**Block Sampling Config** - Configure block Gibbs sampling strategy  
+**Conditional Sampler** - Sampling with clamped observations  
+**Multi-Chain Sampler** - Parallel chain sampling with convergence diagnostics  
+**Annealing Scheduler** - Simulated annealing temperature scheduling  
+**Moment Accumulator** - Online statistics (mean, variance, correlations)  
+**Weighted Factor** - Custom energy factor with modulation  
+**Higher-Order Interactions** - 3-way and 4-way coupling  
+**Ising Trainer** - Contrastive divergence training  
+**Persistent CD Trainer** - Persistent contrastive divergence with fantasy particles  
+**Sampling Profiler** - Performance metrics (ESS, autocorrelation, acceptance rate)  
+**Graph Coloring Optimizer** - Optimal block assignment for parallelism  
+**State Validator** - Constraint validation
+
+### Visualizers (9)
+**Oscilloscope** - Time-domain waveform display  
+**Spectrogram** - Frequency-domain visualization  
+**Phase Space 3D** - 3D attractor visualization  
+**Energy Graph** - Energy landscape over time  
+**Spin State Matrix** - 2D spin configuration heatmap  
+**Correlation Matrix** - Node correlation visualization  
+**Waveform Monitor** - Broadcast-standard waveform display  
+**XY Plot** - 2D parametric curves  
+**P-Bit Mapper** - Real-time p-bit state history
+
+### Machine Learning (6)
+**MLP Predictor** - Multi-layer perceptron with training  
+**CNN Classifier** - Convolutional neural network for time series  
+**Transformer Encoder** - Attention-based sequence encoder  
+**Diffusion Generator** - Denoising diffusion model  
+**GAN Generator** - Generative adversarial network  
+**RL Controller** - Reinforcement learning policy (PPO)  
+**Autoencoder** - Dimensionality reduction and reconstruction
+
+### Analysis Nodes (6)
+**FFT Analyzer** - Fast Fourier transform and spectrum analysis  
+**Pattern Recognizer** - Template matching and similarity detection  
+**Lyapunov Calculator** - Chaos quantification via Lyapunov exponents  
+**Attractor Analyzer** - Attractor dimension and structure analysis  
+**Energy Surface Scanner** - Parameter space energy landscape mapping  
+**Convergence Detector** - Fixed point and limit cycle detection
+
+### Control Nodes (5)
+**Parameter Optimizer** - Gradient-based parameter optimization  
+**Chaos Controller** - OGY chaos control method  
+**PID Controller** - Proportional-integral-derivative feedback control  
+**Adaptive Gibbs Steps** - Dynamic Gibbs step adjustment based on convergence  
+**Noise Generator** - White, pink, and colored noise generation
+
+### Generator Nodes (3)
+**Pattern Generator** - Periodic and chaotic pattern generation  
+**Sequence Generator** - Time-series sequence synthesis  
+**Audio File Upload** - Load audio files for processing
+
+### I/O Nodes (2)
+**Audio Input** - Real-time audio capture  
+**Audio Output** - Real-time audio playback
+
+### Music Processing Nodes
+Chord Detector, Beat Tracker, Harmony Analyzer, Rhythm Generator, Music Transformer embeddings
+
+### Cryptography Nodes
+Stream Cipher, Hash Function, Key Derivation, Random Number Generator, Crypto Analyzer (NIST tests)
+
+### Additional Nodes
+Physics Simulators, Molecular Dynamics, EEG Processing, and more
+
+For complete node documentation, see the frontend node browser or `frontend/components/NodeGraph/NodePresets.ts`.
+
+---
+
 ## Quick Start
 
 ### Prerequisites
@@ -141,17 +365,14 @@ cd Chaotic-Neuro-Computational-Substrate
 python -m venv .venv
 source .venv/bin/activate  # Windows: .venv\Scripts\activate
 
-# Install dependencies
+# Install dependencies (includes all ML frameworks, testing tools, and dev dependencies)
 pip install -r requirements.txt
-
-# Optional: Install ML frameworks
-pip install torch>=2.0.0  # PyTorch
-pip install tensorflow>=2.13.0  # TensorFlow
-pip install transformers>=4.30.0  # HuggingFace
 
 # Run server
 python src/main.py --host 0.0.0.0 --port 8000
 ```
+
+Note: All dependencies including PyTorch, TensorFlow, testing tools (pytest, httpx), and development utilities are included in requirements.txt.
 
 ### 2. Frontend Setup
 ```bash
@@ -244,7 +465,7 @@ POST /session/{session_id}/load
 DELETE /session/{session_id}
 ```
 
-Full API documentation: [docs/API_REFERENCE.md](docs/API_REFERENCE.md)
+Full API documentation available through OpenAPI spec at `/docs` when server is running.
 
 ---
 
@@ -345,7 +566,7 @@ class MyCustomPlugin(AlgorithmPlugin):
 
 Save to `src/plugins/custom/my_plugin.py` and call `/plugins/discover`.
 
-Full guide: [docs/PLUGIN_DEVELOPMENT.md](docs/PLUGIN_DEVELOPMENT.md)
+See `src/plugins/examples/` for more plugin examples.
 
 ---
 
@@ -397,6 +618,48 @@ requests.post("http://localhost:8000/node/add", json={
 
 ---
 
+## Chaos-Based Cryptography
+
+GMCS includes a complete chaos-based cryptography suite demonstrating practical applications of chaotic dynamics in security:
+
+### Implemented Nodes
+**ChaosStreamCipher** - Stream encryption using Chua oscillator as keystream generator  
+**HashFunction** - Chaos-based hashing with avalanche effect  
+**KeyDerivation** - Cryptographic key generation from chaotic iteration  
+**RandomNumberGenerator** - CSPRNG using coupled chaotic oscillators  
+**CryptoAnalyzer** - NIST SP 800-22 statistical randomness tests
+
+### Features
+Sensitive dependence on initial conditions for strong cryptography  
+Chaotic mixing for secure hashing  
+Synchronized chaos for secure communication  
+Statistical validation of randomness quality
+
+### Example
+```python
+from src.processor.crypto_nodes import ChaosStreamCipher
+
+# Initialize cipher with key
+cipher = ChaosStreamCipher(config)
+cipher.set_key(b"my_secret_key")
+
+# Encrypt data
+result = cipher.process(b"Hello World", mode='encrypt')
+ciphertext = result['output']
+
+# Decrypt data
+cipher.set_key(b"my_secret_key")  # Reset with same key
+result = cipher.process(ciphertext, mode='decrypt')
+plaintext = result['output']
+```
+
+Run the chaos cryptography demonstration:
+```bash
+python demos/run_preset.py chaos_crypto
+```
+
+---
+
 ## Performance
 
 ### Benchmarks (NVIDIA RTX 3080)
@@ -420,22 +683,13 @@ python -m cProfile -o profile.stats src/main.py
 ## Documentation
 
 ### Core Documentation
-[Architecture](docs/architecture.md) - System design and data flow  
-[Algorithm Reference](docs/ALGORITHM_REFERENCE.md) - All 21 algorithms detailed  
-[Deployment Guide](docs/DEPLOYMENT.md) - Production deployment
-
-### THRML Integration
-[THRML Integration](docs/thrml_integration.md) - EBM integration guide  
-[THRML Complete Integration](docs/THRML_COMPLETE_INTEGRATION.md) - Full verification
-
-### Development
-[Plugin Development](docs/PLUGIN_DEVELOPMENT.md) - Create custom plugins  
-[Contributing](CONTRIBUTING.md) - Contribution guidelines  
-[Security](SECURITY.md) - Security policy
+See `docs/thrml_docs/` for THRML integration documentation  
+See `src/` directory for inline code documentation  
+API documentation available at `/docs` when server is running
 
 ### Project Information
-[Repository Structure](REPOSITORY_STRUCTURE.md) - File organization  
-[Feature Status](FEATURE_STATUS.md) - Current implementation status
+[Implementation Guide](WHAT_TO_IMPLEMENT.md) - Future enhancements and optional features  
+[Implementation Status](WHAT_IS_MISSING.md) - Current implementation audit
 
 ---
 
@@ -544,15 +798,37 @@ Data augmentation
 
 ---
 
+## Connection Reliability Configuration
+
+Fine-tune WebSocket behaviour with the following environment variables. Frontend values must be exported with the `NEXT_PUBLIC_` prefix so that Next.js can embed them in the client bundle.
+
+| Variable | Scope | Default | Description |
+|----------|-------|---------|-------------|
+| `NEXT_PUBLIC_WS_HEARTBEAT_MS` | Frontend | `10000` | Interval (ms) between client heartbeat pings. |
+| `NEXT_PUBLIC_WS_HEARTBEAT_TIMEOUT_MS` | Frontend | `20000` | Close and reconnect if no heartbeat ACK within this window. |
+| `NEXT_PUBLIC_WS_RECONNECT_BASE_MS` | Frontend | `2000` | Initial reconnect delay; grows exponentially until the max. |
+| `NEXT_PUBLIC_WS_RECONNECT_MAX_MS` | Frontend | `15000` | Maximum delay (ms) between reconnect attempts. |
+| `NEXT_PUBLIC_WS_STALE_TIMEOUT_MS` | Frontend | `3000` | Mark the stream stale if no packets arrive within this timeout. |
+| `GMCS_WS_HEARTBEAT_TIMEOUT` | Backend | `30` | Drop WebSocket clients (seconds) that stop sending heartbeats. |
+| `GMCS_WS_HEALTH_CHECK_INTERVAL` | Backend | `5` | Interval (seconds) for pruning stale connections. |
+| `GMCS_WS_STATUS_INTERVAL` | Backend | `1` | How often (seconds) to push STATUS packets while the sim is paused. |
+
+Recommended production settings:
+
+- Keep the frontend heartbeat interval between 5–10 s and set the timeout to ~2× the interval.
+- When proxies aggressively close idle sockets, lower `NEXT_PUBLIC_WS_HEARTBEAT_MS` to 5000 and backend `GMCS_WS_HEARTBEAT_TIMEOUT` to 15.
+- For slower demo hardware, raise `NEXT_PUBLIC_WS_STALE_TIMEOUT_MS` (e.g. 5000) to avoid false positives while paused.
+
+---
+
 ## Contributing
 
-We welcome contributions. Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+We welcome contributions. Development dependencies are included in requirements.txt.
 
 ### Development Setup
 ```bash
-# Install development dependencies
+# Install all dependencies (includes dev tools)
 pip install -r requirements.txt
-pip install pre-commit black ruff mypy pytest-cov
 
 # Install pre-commit hooks
 pre-commit install
@@ -562,6 +838,10 @@ black src/
 ruff check src/
 mypy src/
 ```
+
+**Local environment tips:**
+- Set `GMCS_RATE_LIMIT_ENABLED=false` during local frontend dev to avoid CORS-style 429s when the UI polls every few seconds. Tune `GMCS_RATE_LIMIT_RPM`/`GMCS_RATE_LIMIT_WINDOW` when load testing.
+- Adjust frontend polling via `NEXT_PUBLIC_STATUS_POLL_MS` (default 2000 ms) and `NEXT_PUBLIC_STATUS_REQUEST_TIMEOUT_MS` if you need faster/slower HUD refreshes.
 
 ---
 
@@ -595,4 +875,4 @@ Repository: github.com/gavriel-tech/Chaotic-Neuro-Computational-Substrate
 
 **Version**: 0.1  
 **Status**: In Development  
-**Last Updated**: October 30, 2025
+**Last Updated**: November 1, 2025

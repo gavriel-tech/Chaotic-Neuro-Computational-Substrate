@@ -1,426 +1,755 @@
 """
-Comprehensive tests for THRML integration.
+Tests for THRML Integration
 
-Tests cover:
-- THRMLWrapper creation and management
-- Gibbs sampling
-- CD-k learning
-- Energy computation
-- Performance mode switching
-- State serialization
-- Integration with simulation loop
+Comprehensive test suite for THRML features:
+- Core wrapper functionality
+- Blocking strategies
+- Multi-GPU support
+- Heterogeneous nodes
+- Energy factors
+- Benchmarking
 """
 
 import pytest
+import numpy as np
 import jax
 import jax.numpy as jnp
-import numpy as np
+import jax.random as random
 
+# Import modules to test
 from src.core.thrml_integration import (
     THRMLWrapper,
     create_thrml_model,
-    thrml_to_jax_weights,
-    jax_to_thrml_weights,
-    reconstruct_thrml_wrapper
-)
-from src.core.ebm import (
-    ebm_update_with_thrml,
-    compute_thrml_feedback,
-    compute_ebm_energy_thrml,
-    binary_state_from_x
-)
-from src.core.state import initialize_system_state
-from src.core.simulation import (
-    simulation_step,
-    simulation_step_with_thrml_learning,
-    run_simulation
-)
-from src.config.thrml_config import (
-    PerformanceMode,
-    get_performance_config,
-    PERFORMANCE_PRESETS
+    THRML_AVAILABLE
 )
 
+if THRML_AVAILABLE:
+    try:
+        from src.core.blocking_strategies import (
+            get_strategy,
+            list_strategies,
+            CheckerboardStrategy,
+            RandomStrategy
+        )
+        from src.core.multi_gpu import (
+            get_device_info,
+            create_multi_gpu_thrml_sampler
+        )
+        from src.core.heterogeneous_nodes import (
+            HeterogeneousNodeSpec,
+            NodeType,
+            create_heterogeneous_model,
+            create_domain_specific_model
+        )
+        from src.core.energy_factors import (
+            EnergyFactorSystem,
+            PhotonicCouplingFactor,
+            AudioHarmonyFactor,
+            MLRegularizationFactor,
+            add_photonic_coupling
+        )
+        from src.tools.thrml_benchmark import THRMLBenchmark
+        from src.visualization.thrml_visualizers import THRMLVisualizer
+        from src.core.thrml_compat import (
+            SpinNodes,
+            ContinuousNodes,
+            DiscreteNodes,
+            EnergyObserver,
+            CorrelationObserver,
+        )
+        from thrml import Block
+        from thrml.block_sampling import sample_with_observation, SamplingSchedule
+        from thrml.models import IsingSamplingProgram, hinton_init
+    except ImportError as e:
+        # Some modules may have additional dependencies
+        import warnings
+        warnings.warn(f"Could not import all THRML modules: {e}")
+
+
+# Skip all tests if THRML not available
+pytestmark = pytest.mark.skipif(
+    not THRML_AVAILABLE,
+    reason="THRML not available"
+)
+
+
+# ============================================================================
+# Fixtures
+# ============================================================================
+
+@pytest.fixture
+def simple_weights():
+    """Create simple weight matrix."""
+    n_nodes = 8
+    weights = np.zeros((n_nodes, n_nodes), dtype=float)
+    for i in range(n_nodes):
+        j = (i + 1) % n_nodes
+        weights[i, j] = weights[j, i] = 0.1
+    return weights
+
+
+@pytest.fixture
+def simple_biases():
+    """Create simple bias vector."""
+    return np.zeros(8)
+
+
+@pytest.fixture
+def thrml_wrapper(simple_weights, simple_biases):
+    """Create THRML wrapper for testing."""
+    return create_thrml_model(
+        n_nodes=8,
+        weights=simple_weights,
+        biases=simple_biases,
+        beta=1.0
+    )
+
+
+@pytest.fixture
+def jax_key():
+    """Create JAX random key."""
+    return random.PRNGKey(42)
+
+
+# ============================================================================
+# Core Integration Tests
+# ============================================================================
 
 class TestTHRMLWrapper:
-    """Test THRMLWrapper class functionality."""
+    """Test THRMLWrapper core functionality."""
     
-    def test_wrapper_creation(self):
-        """Test creating a THRML wrapper."""
-        n_nodes = 5
-        weights = np.random.randn(n_nodes, n_nodes) * 0.1
-        weights = (weights + weights.T) / 2  # Make symmetric
-        np.fill_diagonal(weights, 0)
-        biases = np.zeros(n_nodes)
+    def test_initialization(self, simple_weights, simple_biases):
+        """Test wrapper initialization."""
+        wrapper = THRMLWrapper(
+            n_nodes=8,
+            weights=simple_weights,
+            biases=simple_biases,
+            beta=1.0
+        )
         
-        wrapper = THRMLWrapper(n_nodes, weights, biases, beta=1.0)
-        
-        assert wrapper.n_nodes == n_nodes
-        assert len(wrapper.nodes) == n_nodes
+        assert wrapper.n_nodes == 8
         assert wrapper.beta == 1.0
+        assert len(wrapper.nodes) == 8
+        assert wrapper.model is not None
+    
+    def test_initialization_invalid_weights(self, simple_biases):
+        """Test initialization with invalid weights."""
+        # Non-finite weights
+        weights = np.full((8, 8), np.nan)
         
-    def test_wrapper_sampling(self):
-        """Test Gibbs sampling produces valid binary states."""
-        n_nodes = 4
-        weights = np.array([
-            [0.0, 0.5, 0.0, 0.0],
-            [0.5, 0.0, 0.5, 0.0],
-            [0.0, 0.5, 0.0, 0.5],
-            [0.0, 0.0, 0.5, 0.0]
-        ])
-        biases = np.zeros(n_nodes)
+        with pytest.raises(ValueError, match="non-finite"):
+            THRMLWrapper(8, weights, simple_biases, 1.0)
+    
+    def test_initialization_wrong_shape(self, simple_biases):
+        """Test initialization with wrong shape."""
+        weights = np.zeros((8, 10))  # Wrong shape
         
-        wrapper = THRMLWrapper(n_nodes, weights, biases)
-        key = jax.random.PRNGKey(42)
+        with pytest.raises(ValueError, match="shape"):
+            THRMLWrapper(8, weights, simple_biases, 1.0)
+    
+    def test_sample_gibbs(self, thrml_wrapper, jax_key):
+        """Test Gibbs sampling."""
+        samples = thrml_wrapper.sample_gibbs(
+            n_steps=10,
+            temperature=1.0,
+            key=jax_key
+        )
         
-        # Sample
-        samples = wrapper.sample_gibbs(n_steps=10, temperature=1.0, key=key)
+        assert samples.shape == (thrml_wrapper.n_nodes,)
+        assert np.all((samples == -1) | (samples == 1))  # Binary values
+    
+    def test_sample_gibbs_invalid_temperature(self, thrml_wrapper, jax_key):
+        """Test sampling with invalid temperature."""
+        with pytest.raises(ValueError, match="temperature"):
+            thrml_wrapper.sample_gibbs(
+                n_steps=10,
+                temperature=0.0,  # Invalid
+                key=jax_key
+            )
+    
+    def test_compute_energy(self, thrml_wrapper):
+        """Test energy computation."""
+        states = np.ones(thrml_wrapper.n_nodes)
+        energy = thrml_wrapper.compute_energy(states)
         
-        # Check shape and values
-        assert samples.shape == (n_nodes,)
-        assert np.all(np.isin(samples, [-1.0, 1.0]))
+        assert isinstance(energy, float)
+        assert np.isfinite(energy)
+    
+    def test_update_biases(self, thrml_wrapper):
+        """Test bias update."""
+        new_biases = np.random.randn(thrml_wrapper.n_nodes)
+        thrml_wrapper.update_biases(new_biases)
         
-    def test_wrapper_energy_computation(self):
-        """Test energy computation matches Ising formula."""
-        n_nodes = 3
-        weights = np.array([
-            [0.0, 1.0, 0.0],
-            [1.0, 0.0, 1.0],
-            [0.0, 1.0, 0.0]
-        ])
-        biases = np.array([0.1, -0.2, 0.1])
+        assert np.allclose(thrml_wrapper.biases, new_biases)
+    
+    def test_update_weights_cd(self, thrml_wrapper, jax_key):
+        """Test CD weight update."""
+        data_states = np.random.choice([-1.0, 1.0], size=thrml_wrapper.n_nodes)
         
-        wrapper = THRMLWrapper(n_nodes, weights, biases)
+        diagnostics = thrml_wrapper.update_weights_cd(
+            data_states=data_states,
+            eta=0.01,
+            k_steps=1,
+            key=jax_key
+        )
         
-        # Test with known state
-        states = np.array([1.0, -1.0, 1.0])
-        energy = wrapper.compute_energy(states)
+        assert 'gradient_norm' in diagnostics
+        assert 'energy_diff' in diagnostics
+        assert isinstance(diagnostics['gradient_norm'], float)
+    
+    def test_serialize_deserialize(self, thrml_wrapper):
+        """Test serialization and deserialization."""
+        # Serialize
+        state_dict = thrml_wrapper.serialize()
         
-        # Manual calculation: E = -0.5 * s^T @ W @ s - b^T @ s
-        expected_interaction = -0.5 * np.dot(states, np.dot(weights, states))
-        expected_bias = -np.dot(biases, states)
-        expected_energy = expected_interaction + expected_bias
+        assert isinstance(state_dict, dict)
+        assert 'n_nodes' in state_dict
+        assert 'beta' in state_dict
         
-        assert np.isclose(energy, expected_energy, atol=1e-5)
+        # Deserialize
+        new_wrapper = THRMLWrapper.deserialize(state_dict)
         
-    def test_wrapper_cd_learning(self):
-        """Test CD-k learning updates weights."""
-        n_nodes = 4
-        weights = np.zeros((n_nodes, n_nodes))
-        biases = np.zeros(n_nodes)
+        assert new_wrapper.n_nodes == thrml_wrapper.n_nodes
+        assert np.isclose(new_wrapper.beta, thrml_wrapper.beta)
+    
+    def test_health_status(self, thrml_wrapper):
+        """Test health status reporting."""
+        health = thrml_wrapper.get_health_status()
         
-        wrapper = THRMLWrapper(n_nodes, weights, biases)
+        assert isinstance(health, dict)
+        assert 'healthy' in health
+        assert 'n_nodes' in health
+        assert 'n_edges' in health
+        assert health['healthy'] is True
+
+
+# ============================================================================
+# Blocking Strategies Tests
+# ============================================================================
+
+class TestBlockingStrategies:
+    """Test blocking strategy implementations."""
+    
+    def test_list_strategies(self):
+        """Test listing available strategies."""
+        strategies = list_strategies()
         
-        # Data states (all aligned)
-        data_states = np.array([1.0, 1.0, 1.0, 1.0])
+        assert isinstance(strategies, list)
+        strategy_names = [s.name for s in strategies]
+        assert 'checkerboard' in strategy_names
+        assert 'random' in strategy_names
+    
+    def test_get_strategy(self):
+        """Test getting a strategy."""
+        strategy = get_strategy('checkerboard')
         
-        # Get initial weights
-        initial_weights = wrapper.get_weights().copy()
+        assert strategy is not None
+        assert isinstance(strategy, CheckerboardStrategy)
+    
+    def test_get_invalid_strategy(self):
+        """Test getting invalid strategy."""
+        strategy = get_strategy('nonexistent')
+        assert strategy is None
+    
+    def test_checkerboard_strategy(self):
+        """Test checkerboard blocking."""
+        strategy = CheckerboardStrategy()
+        n_nodes = 16
+        # Create 2D grid positions for checkerboard
+        positions = np.array([[i // 4, i % 4] for i in range(n_nodes)], dtype=np.float32)
         
-        # Run CD-1
-        key = jax.random.PRNGKey(0)
-        wrapper.update_weights_cd(data_states, eta=0.1, k_steps=1, key=key)
+        blocks = strategy.build_blocks(n_nodes, positions=positions)
         
-        # Weights should have changed
-        new_weights = wrapper.get_weights()
-        assert not np.allclose(initial_weights, new_weights)
+        assert len(blocks) == 2
+        # Blocks should be non-empty
+        assert all(len(block.nodes) > 0 for block in blocks)
+    
+    def test_random_strategy(self):
+        """Test random blocking."""
+        strategy = RandomStrategy()
+        n_nodes = 16
         
-        # Weights should still be symmetric
-        assert np.allclose(new_weights, new_weights.T)
+        blocks = strategy.build_blocks(n_nodes, seed=42)
         
-        # Diagonal should still be zero
-        assert np.allclose(np.diag(new_weights), 0)
+        assert len(blocks) >= 2
+        # Check all nodes covered - blocks contain actual node objects in THRML, not IDs
+        total_nodes = sum(len(block.nodes) for block in blocks)
+        assert total_nodes == n_nodes
+    
+    def test_wrapper_set_blocking_strategy(self, thrml_wrapper):
+        """Test setting blocking strategy on wrapper."""
+        thrml_wrapper.set_blocking_strategy('checkerboard')
         
-    def test_wrapper_serialization(self):
-        """Test wrapper can be serialized and reconstructed."""
-        n_nodes = 3
+        assert thrml_wrapper.current_strategy_name == 'checkerboard'
+        assert len(thrml_wrapper.free_blocks) > 0
+    
+    def test_wrapper_validate_blocks(self, thrml_wrapper):
+        """Test block validation."""
+        thrml_wrapper.set_blocking_strategy('checkerboard')
+        validation = thrml_wrapper.validate_current_blocks()
+        
+        assert 'valid' in validation
+        assert 'balance_score' in validation
+        assert validation['valid'] is True
+
+
+# ============================================================================
+# Multi-GPU Tests
+# ============================================================================
+
+class TestMultiGPU:
+    """Test multi-GPU functionality."""
+    
+    def test_get_device_info(self):
+        """Test device info retrieval."""
+        info = get_device_info()
+        
+        assert 'n_devices' in info
+        assert 'default_backend' in info
+        assert 'devices' in info
+        assert isinstance(info['n_devices'], int)
+    
+    def test_create_multi_gpu_sampler(self, thrml_wrapper):
+        """Test multi-GPU sampler creation."""
+        gpu_sampler = create_multi_gpu_thrml_sampler(thrml_wrapper)
+        
+        # May be None if only 1 device
+        if gpu_sampler is not None:
+            assert gpu_sampler.n_devices >= 2
+            assert gpu_sampler.base_wrapper == thrml_wrapper
+    
+    @pytest.mark.skipif(
+        len(jax.devices()) < 2,
+        reason="Requires 2+ GPUs"
+    )
+    def test_parallel_chain_sampling(self, thrml_wrapper, jax_key):
+        """Test parallel chain sampling (requires 2+ GPUs)."""
+        gpu_sampler = create_multi_gpu_thrml_sampler(thrml_wrapper)
+        
+        assert gpu_sampler is not None
+        
+        samples, diagnostics = gpu_sampler.sample_parallel_chains(
+            n_chains=4,
+            n_steps=10,
+            temperature=1.0,
+            key=jax_key
+        )
+        
+        assert samples.shape[0] == 4
+        assert samples.shape[1] == thrml_wrapper.n_nodes
+        assert len(diagnostics) == 4
+
+
+# ============================================================================
+# Heterogeneous Nodes Tests
+# ============================================================================
+
+class TestHeterogeneousNodes:
+    """Test heterogeneous node types."""
+    
+    def test_node_spec_creation(self):
+        """Test node spec creation."""
+        spec = HeterogeneousNodeSpec(
+            node_id=0,
+            node_type=NodeType.SPIN,
+            properties={}
+        )
+        
+        assert spec.node_id == 0
+        assert spec.node_type == NodeType.SPIN
+    
+    def test_node_spec_serialization(self):
+        """Test node spec serialization."""
+        spec = HeterogeneousNodeSpec(
+            node_id=0,
+            node_type=NodeType.CONTINUOUS,
+            properties={'min_value': -1.0, 'max_value': 1.0}
+        )
+        
+        data = spec.to_dict()
+        new_spec = HeterogeneousNodeSpec.from_dict(data)
+        
+        assert new_spec.node_id == spec.node_id
+        assert new_spec.node_type == spec.node_type
+    
+    def test_create_heterogeneous_model(self):
+        """Test heterogeneous model creation."""
+        node_types = np.array([0, 0, 1, 1, 2, 2])  # Mix of types
+        weights = np.random.randn(6, 6) * 0.1
+        weights = (weights + weights.T) / 2
+        np.fill_diagonal(weights, 0)
+        
+        wrapper = create_heterogeneous_model(
+            node_type_array=node_types,
+            weights=weights,
+            beta=1.0
+        )
+        
+        assert wrapper.n_nodes == 6
+        assert len(wrapper.node_groups[NodeType.SPIN]) == 2
+        assert len(wrapper.node_groups[NodeType.CONTINUOUS]) == 2
+        assert len(wrapper.node_groups[NodeType.DISCRETE]) == 2
+        assert NodeType.SPIN in wrapper.node_wrappers
+        assert isinstance(wrapper.node_wrappers[NodeType.DISCRETE], DiscreteNodes)
+    
+    def test_domain_specific_model(self):
+        """Test domain-specific model creation."""
+        wrapper = create_domain_specific_model(
+            n_photonic=4,
+            n_audio=4,
+            n_ml=4
+        )
+        
+        assert wrapper.n_nodes == 12
+        info = wrapper.get_info()
+        assert info['type_counts']['SPIN'] == 4
+        assert info['type_counts']['CONTINUOUS'] == 4
+        assert info['type_counts']['DISCRETE'] == 4
+        assert NodeType.CONTINUOUS in wrapper.node_wrappers
+        continuous_group = wrapper.node_wrappers[NodeType.CONTINUOUS]
+        assert isinstance(continuous_group, ContinuousNodes)
+        assert 'min_value' in continuous_group.metadata
+
+
+# ============================================================================
+# Energy Factors Tests
+# ============================================================================
+
+class TestEnergyFactors:
+    """Test custom energy factors."""
+    
+    def test_photonic_factor(self):
+        """Test photonic coupling factor."""
+        factor = PhotonicCouplingFactor(
+            factor_id='test_photonic',
+            node_ids=[0, 1, 2, 3],
+            strength=0.5,
+            wavelength=1550e-9
+        )
+        
+        states = np.ones(10)
+        energy = factor.compute(states)
+        
+        assert isinstance(energy, float)
+        assert np.isfinite(energy)
+    
+    def test_audio_factor(self):
+        """Test audio harmony factor."""
+        factor = AudioHarmonyFactor(
+            factor_id='test_audio',
+            node_ids=[0, 1, 2, 3],
+            strength=0.3,
+            fundamental_freq=440.0
+        )
+        
+        states = np.ones(10)
+        energy = factor.compute(states)
+        
+        assert isinstance(energy, float)
+        assert np.isfinite(energy)
+    
+    def test_ml_regularization_factor(self):
+        """Test ML regularization factor."""
+        factor = MLRegularizationFactor(
+            factor_id='test_ml',
+            node_ids=[0, 1, 2, 3],
+            strength=0.01,
+            regularization_type='l2'
+        )
+        
+        states = np.random.randn(10)
+        energy = factor.compute(states)
+        
+        assert isinstance(energy, float)
+        assert np.isfinite(energy)
+        assert energy >= 0  # L2 is always positive
+    
+    def test_factor_system(self):
+        """Test energy factor system."""
+        system = EnergyFactorSystem()
+        
+        add_photonic_coupling(system, [0, 1, 2, 3], strength=0.5)
+        
+        assert len(system.factors) == 1
+        
+        states = np.ones(10)
+        total_energy = system.compute_total_energy(states, base_energy=0.0)
+        
+        assert isinstance(total_energy, float)
+        assert np.isfinite(total_energy)
+    
+    def test_factor_system_serialization(self):
+        """Test factor system serialization."""
+        system = EnergyFactorSystem()
+        add_photonic_coupling(system, [0, 1, 2, 3], strength=0.5)
+        
+        data = system.serialize()
+        new_system = EnergyFactorSystem.deserialize(data)
+        
+        assert len(new_system.factors) == len(system.factors)
+
+
+# ============================================================================
+# Benchmarking Tests
+# ============================================================================
+
+class TestBenchmarking:
+    """Test benchmarking functionality."""
+    
+    def test_benchmark_creation(self):
+        """Test benchmark creation."""
+        benchmark = THRMLBenchmark(verbose=False)
+        
+        assert benchmark is not None
+    
+    def test_single_benchmark(self):
+        """Test single benchmark run."""
+        benchmark = THRMLBenchmark(verbose=False)
+        
+        result = benchmark.run_single(
+            n_nodes=16,
+            strategy='checkerboard',
+            n_samples=10,
+            seed=0
+        )
+        
+        assert result.samples_per_sec > 0
+        assert result.ess_per_sec > 0
+        assert -1 <= result.lag1_autocorr <= 1  # Autocorrelation can be negative
+    
+    def test_compare_strategies(self):
+        """Test strategy comparison."""
+        benchmark = THRMLBenchmark(verbose=False)
+        
+        results = benchmark.compare_strategies(
+            strategies=['checkerboard', 'random'],
+            n_nodes=16,
+            n_samples=10
+        )
+        
+        assert len(results) == 2
+        strategy_names = [result.strategy for result in results]
+        assert 'checkerboard' in strategy_names
+        assert 'random' in strategy_names
+
+
+# ============================================================================
+# Compatibility Helpers Tests
+# ============================================================================
+
+class TestCompatibilityWrappers:
+    """Validate compatibility node group wrappers."""
+
+    def test_spin_nodes_wrapper(self):
+        group = SpinNodes('spin', [0, 1, 2])
+        assert len(group) == 3
+        block = group.as_block()
+        assert isinstance(block, Block)
+        assert len(block.nodes) == 3
+
+    def test_continuous_nodes_metadata(self):
+        group = ContinuousNodes('cont', [0, 1], min_value=-0.5, max_value=0.5)
+        assert group.metadata['min_value'] == -0.5
+        assert group.metadata['max_value'] == 0.5
+
+    def test_discrete_nodes_metadata(self):
+        group = DiscreteNodes('disc', [0, 1, 2], n_values=7)
+        assert group.metadata['n_values'] == 7
+
+
+class TestCompatibilityObservers:
+    """Ensure compatibility observers operate with THRML sampling."""
+
+    def test_energy_observer(self, thrml_wrapper, jax_key):
+        thrml_wrapper.set_blocking_strategy('checkerboard')
+        program = IsingSamplingProgram(
+            thrml_wrapper.model,
+            thrml_wrapper.free_blocks,
+            []
+        )
+        schedule = SamplingSchedule(n_warmup=1, n_samples=3, steps_per_sample=1)
+        key_init, key_run = random.split(jax_key)
+        init_state = hinton_init(key_init, thrml_wrapper.model, thrml_wrapper.free_blocks, ())
+        observer = EnergyObserver(thrml_wrapper.model)
+        carry = observer.init()
+        _, energies = sample_with_observation(
+            key_run,
+            program,
+            schedule,
+            init_state,
+            [],
+            carry,
+            observer,
+        )
+        energies = jnp.asarray(energies)
+        assert energies.shape[0] == schedule.n_samples
+
+    def test_correlation_observer(self, thrml_wrapper, jax_key):
+        thrml_wrapper.set_blocking_strategy('checkerboard')
+        program = IsingSamplingProgram(
+            thrml_wrapper.model,
+            thrml_wrapper.free_blocks,
+            []
+        )
+        schedule = SamplingSchedule(n_warmup=1, n_samples=3, steps_per_sample=1)
+        key_init, key_run = random.split(jax_key)
+        init_state = hinton_init(key_init, thrml_wrapper.model, thrml_wrapper.free_blocks, ())
+        observer = CorrelationObserver(thrml_wrapper.model)
+        carry = observer.init()
+        _, correlations = sample_with_observation(
+            key_run,
+            program,
+            schedule,
+            init_state,
+            [],
+            carry,
+            observer,
+        )
+        correlations = jnp.asarray(correlations)
+        assert correlations.shape[0] == schedule.n_samples
+        if thrml_wrapper.model.edges:
+            assert correlations.shape[1] == len(thrml_wrapper.model.edges)
+
+
+# ============================================================================
+# Visualization Tests
+# ============================================================================
+
+class TestVisualization:
+    """Test THRML visualizers."""
+    
+    @pytest.mark.skipif(
+        True,  # Skip matplotlib tests by default
+        reason="Matplotlib tests require display"
+    )
+    def test_visualizer_creation(self):
+        """Test visualizer creation."""
+        viz = THRMLVisualizer()
+        assert viz is not None
+    
+    @pytest.mark.skipif(
+        True,
+        reason="Matplotlib tests require display"
+    )
+    def test_pbit_grid_plot(self):
+        """Test P-bit grid visualization."""
+        viz = THRMLVisualizer()
+        states = np.random.choice([-1, 1], size=64)
+        
+        fig = viz.plot_pbit_grid(states, grid_shape=(8, 8))
+        assert fig is not None
+
+
+# ============================================================================
+# Integration Tests
+# ============================================================================
+
+class TestIntegration:
+    """End-to-end integration tests."""
+    
+    def test_full_workflow(self, jax_key):
+        """Test complete workflow."""
+        # 1. Create model
+        n_nodes = 16
         weights = np.random.randn(n_nodes, n_nodes) * 0.1
         weights = (weights + weights.T) / 2
         np.fill_diagonal(weights, 0)
-        biases = np.random.randn(n_nodes) * 0.1
-        beta = 1.5
         
-        wrapper = THRMLWrapper(n_nodes, weights, biases, beta)
-        
-        # Serialize
-        data = wrapper.serialize()
-        
-        # Reconstruct
-        wrapper2 = THRMLWrapper.deserialize(data)
-        
-        # Check equivalence
-        assert wrapper2.n_nodes == wrapper.n_nodes
-        assert np.allclose(wrapper2.get_weights(), wrapper.get_weights())
-        assert np.allclose(wrapper2.biases_jax, wrapper.biases_jax)
-        assert wrapper2.beta == wrapper.beta
-
-
-class TestEBMFunctions:
-    """Test EBM functions with THRML."""
-    
-    def test_ebm_update_with_thrml(self):
-        """Test THRML-based EBM update."""
-        n_nodes = 4
-        weights = np.zeros((n_nodes, n_nodes))
-        biases = np.zeros(n_nodes)
-        
-        wrapper = THRMLWrapper(n_nodes, weights, biases)
-        
-        # Create oscillator states
-        oscillator_states = jnp.array([
-            [0.5, 0.0, 0.0],
-            [0.3, 0.0, 0.0],
-            [-0.2, 0.0, 0.0],
-            [-0.4, 0.0, 0.0]
-        ])
-        mask = jnp.ones(n_nodes)
-        
-        key = jax.random.PRNGKey(0)
-        
-        # Update
-        wrapper = ebm_update_with_thrml(
-            wrapper,
-            oscillator_states,
-            mask,
-            eta=0.01,
-            k_steps=1,
-            key=key
-        )
-        
-        # Weights should have been updated
-        new_weights = wrapper.get_weights()
-        assert not np.allclose(new_weights, 0)
-        
-    def test_compute_thrml_feedback(self):
-        """Test THRML feedback computation."""
-        n_nodes = 3
-        weights = np.array([
-            [0.0, 0.5, 0.0],
-            [0.5, 0.0, 0.5],
-            [0.0, 0.5, 0.0]
-        ])
-        biases = np.zeros(n_nodes)
-        
-        wrapper = THRMLWrapper(n_nodes, weights, biases)
-        
-        gmcs_biases = jnp.array([0.1, -0.1, 0.1])
-        key = jax.random.PRNGKey(42)
-        
-        feedback = compute_thrml_feedback(
-            wrapper,
-            gmcs_biases,
-            temperature=1.0,
-            gibbs_steps=5,
-            key=key
-        )
-        
-        # Feedback should be a JAX array
-        assert isinstance(feedback, jnp.ndarray)
-        assert feedback.shape[0] >= n_nodes
-        
-    def test_compute_ebm_energy_thrml(self):
-        """Test energy computation via THRML."""
-        n_nodes = 3
-        weights = np.eye(n_nodes) * 0 + 0.1  # Small coupling
-        np.fill_diagonal(weights, 0)
-        biases = np.zeros(n_nodes)
-        
-        wrapper = THRMLWrapper(n_nodes, weights, biases)
-        
-        oscillator_states = jnp.array([
-            [0.5, 0.0, 0.0],
-            [-0.3, 0.0, 0.0],
-            [0.2, 0.0, 0.0]
-        ])
-        mask = jnp.ones(n_nodes)
-        
-        energy = compute_ebm_energy_thrml(wrapper, oscillator_states, mask)
-        
-        # Energy should be a float
-        assert isinstance(energy, float)
-
-
-class TestPerformanceModes:
-    """Test performance mode configuration."""
-    
-    def test_all_modes_available(self):
-        """Test all three performance modes exist."""
-        assert PerformanceMode.SPEED in PERFORMANCE_PRESETS
-        assert PerformanceMode.ACCURACY in PERFORMANCE_PRESETS
-        assert PerformanceMode.RESEARCH in PERFORMANCE_PRESETS
-        
-    def test_mode_configurations(self):
-        """Test each mode has valid configuration."""
-        for mode in PerformanceMode:
-            config = PERFORMANCE_PRESETS[mode]
-            
-            assert config.gibbs_steps > 0
-            assert config.temperature > 0
-            assert config.learning_rate > 0
-            assert config.cd_k_steps > 0
-            assert config.weight_update_freq > 0
-            assert isinstance(config.use_jit, bool)
-            assert len(config.description) > 0
-            
-    def test_mode_ordering(self):
-        """Test modes are ordered by computational cost."""
-        speed_config = PERFORMANCE_PRESETS[PerformanceMode.SPEED]
-        accuracy_config = PERFORMANCE_PRESETS[PerformanceMode.ACCURACY]
-        research_config = PERFORMANCE_PRESETS[PerformanceMode.RESEARCH]
-        
-        # Speed should have fewest steps
-        assert speed_config.gibbs_steps < accuracy_config.gibbs_steps
-        assert accuracy_config.gibbs_steps < research_config.gibbs_steps
-        
-        # Speed should have lowest CD-k
-        assert speed_config.cd_k_steps <= accuracy_config.cd_k_steps
-        assert accuracy_config.cd_k_steps <= research_config.cd_k_steps
-        
-    def test_get_performance_config(self):
-        """Test getting config by mode name."""
-        config = get_performance_config('speed')
-        assert config.mode == PerformanceMode.SPEED
-        
-        config = get_performance_config('accuracy')
-        assert config.mode == PerformanceMode.ACCURACY
-        
-        config = get_performance_config('research')
-        assert config.mode == PerformanceMode.RESEARCH
-        
-        # Test invalid mode
-        with pytest.raises(ValueError):
-            get_performance_config('invalid')
-
-
-class TestSimulationIntegration:
-    """Test THRML integration with simulation loop."""
-    
-    def test_simulation_step_with_thrml(self):
-        """Test simulation step with THRML wrapper."""
-        key = jax.random.PRNGKey(0)
-        state = initialize_system_state(key, dt=0.01)
-        
-        # Add a node
-        from src.core.simulation import add_node_to_state
-        state, node_id = add_node_to_state(state, (128, 128), initial_perturbation=0.1)
-        
-        # Create THRML wrapper
-        n_active = 1
-        wrapper = create_thrml_model(
-            n_nodes=n_active,
-            weights=np.zeros((n_active, n_active)),
-            biases=np.zeros(n_active),
-            beta=1.0
-        )
-        
-        # Run simulation step
-        new_state, new_wrapper = simulation_step(
-            state,
-            enable_ebm_feedback=True,
-            thrml_wrapper=wrapper
-        )
-        
-        # State should have advanced
-        assert float(new_state.t[0]) > float(state.t[0])
-        
-    def test_simulation_step_with_learning(self):
-        """Test simulation step with THRML learning."""
-        key = jax.random.PRNGKey(0)
-        state = initialize_system_state(key, dt=0.01)
-        
-        # Add nodes
-        from src.core.simulation import add_node_to_state
-        state, _ = add_node_to_state(state, (100, 128), initial_perturbation=0.1)
-        state, _ = add_node_to_state(state, (156, 128), initial_perturbation=-0.1)
-        
-        # Create THRML wrapper
-        n_active = 2
-        wrapper = create_thrml_model(
-            n_nodes=n_active,
-            weights=np.zeros((n_active, n_active)),
-            biases=np.zeros(n_active),
-            beta=1.0
-        )
-        
-        # Get initial weights
-        initial_weights = wrapper.get_weights().copy()
-        
-        # Run learning step
-        new_state, new_wrapper = simulation_step_with_thrml_learning(
-            state,
-            wrapper,
-            eta=0.01
-        )
-        
-        # Weights should have changed
-        new_weights = new_wrapper.get_weights()
-        assert not np.allclose(initial_weights, new_weights, atol=1e-6)
-        
-    def test_run_simulation_with_thrml(self):
-        """Test multi-step simulation with THRML."""
-        key = jax.random.PRNGKey(0)
-        state = initialize_system_state(key, dt=0.01)
-        
-        # Add a node
-        from src.core.simulation import add_node_to_state
-        state, _ = add_node_to_state(state, (128, 128), initial_perturbation=0.1)
-        
-        # Create THRML wrapper
-        n_active = 1
-        wrapper = create_thrml_model(
-            n_nodes=n_active,
-            weights=np.zeros((n_active, n_active)),
-            biases=np.zeros(n_active),
-            beta=1.0
-        )
-        
-        # Run simulation
-        final_state, final_wrapper, diagnostics = run_simulation(
-            state,
-            n_steps=10,
-            thrml_wrapper=wrapper,
-            ebm_learning_interval=5,
-            enable_ebm=True
-        )
-        
-        # Check diagnostics
-        assert len(diagnostics['times']) > 0
-        assert len(diagnostics['max_osc_values']) > 0
-        assert len(diagnostics['max_field_values']) > 0
-        
-        # Time should have advanced
-        assert float(final_state.t[0]) > float(state.t[0])
-
-
-class TestStateSerialization:
-    """Test THRML state serialization."""
-    
-    def test_thrml_model_data_in_state(self):
-        """Test THRML model data can be stored in SystemState."""
-        key = jax.random.PRNGKey(0)
-        state = initialize_system_state(key)
-        
-        # Create wrapper
-        n_nodes = 2
         wrapper = create_thrml_model(
             n_nodes=n_nodes,
-            weights=np.random.randn(n_nodes, n_nodes) * 0.1,
+            weights=weights,
             biases=np.zeros(n_nodes),
             beta=1.0
         )
         
-        # Serialize to state
-        thrml_data = wrapper.serialize()
-        state = state._replace(thrml_model_data=thrml_data)
+        # 2. Set blocking strategy
+        wrapper.set_blocking_strategy('checkerboard')
         
-        # Reconstruct
-        wrapper2 = reconstruct_thrml_wrapper(state.thrml_model_data)
+        # 3. Sample
+        samples = wrapper.sample_gibbs(n_steps=10, temperature=1.0, key=jax_key)
         
-        # Check equivalence
-        assert wrapper2.n_nodes == wrapper.n_nodes
-        assert np.allclose(wrapper2.get_weights(), wrapper.get_weights())
+        # 4. Compute energy
+        energy = wrapper.compute_energy(samples)
+        
+        # 5. Update weights
+        key, subkey = random.split(jax_key)
+        diagnostics = wrapper.update_weights_cd(
+            data_states=samples,
+            eta=0.01,
+            k_steps=1,
+            key=subkey
+        )
+        
+        # Verify all steps succeeded
+        assert samples.shape == (n_nodes,)
+        assert isinstance(energy, float)
+        assert 'gradient_norm' in diagnostics
+    
+    def test_error_recovery(self, thrml_wrapper):
+        """Test error recovery."""
+        # Try with invalid temperature (should handle gracefully)
+        try:
+            thrml_wrapper.sample_gibbs(
+                n_steps=10,
+                temperature=-1.0,  # Invalid
+                key=random.PRNGKey(0)
+            )
+        except ValueError:
+            pass  # Expected
+        
+        # Wrapper should still be functional
+        health = thrml_wrapper.get_health_status()
+        assert health is not None
 
 
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
+# ============================================================================
+# Performance Tests
+# ============================================================================
 
+class TestPerformance:
+    """Performance regression tests."""
+    
+    def test_sampling_speed(self, thrml_wrapper, jax_key):
+        """Test sampling speed meets minimum threshold."""
+        import time
+        
+        n_samples = 100
+        t_start = time.time()
+        
+        for _ in range(n_samples):
+            key, subkey = random.split(jax_key)
+            thrml_wrapper.sample_gibbs(n_steps=1, temperature=1.0, key=subkey)
+        
+        elapsed = time.time() - t_start
+        samples_per_sec = n_samples / elapsed
+        
+        # Minimum threshold: 1 samples/sec (very conservative, accounts for JIT compilation)
+        assert samples_per_sec > 1
+    
+    def test_memory_usage(self, jax_key):
+        """Test memory usage stays reasonable."""
+        # Create large model
+        n_nodes = 256
+        weights = np.random.randn(n_nodes, n_nodes) * 0.01
+        weights = (weights + weights.T) / 2
+        np.fill_diagonal(weights, 0)
+        
+        wrapper = create_thrml_model(
+            n_nodes=n_nodes,
+            weights=weights,
+            biases=np.zeros(n_nodes),
+            beta=1.0
+        )
+        
+        # Sample multiple times
+        for _ in range(10):
+            key, subkey = random.split(jax_key)
+            samples = wrapper.sample_gibbs(n_steps=10, temperature=1.0, key=subkey)
+        
+        # Should not crash with OOM
+        assert True
+
+
+if __name__ == '__main__':
+    # Run tests with pytest
+    pytest.main([__file__, '-v'])

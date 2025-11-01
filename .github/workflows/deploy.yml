@@ -1,0 +1,107 @@
+name: Deploy
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deployment environment'
+        required: true
+        type: choice
+        options:
+          - staging
+          - production
+
+jobs:
+  deploy-staging:
+    if: github.event.inputs.environment == 'staging' || startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    environment: staging
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+    
+    - name: Deploy to staging
+      run: |
+        echo "Deploying to staging environment..."
+        # Add deployment commands here
+        # Examples:
+        # - SSH into server and pull latest images
+        # - Use kubectl to update Kubernetes deployment
+        # - Trigger cloud deployment (AWS ECS, GCP Cloud Run, etc.)
+    
+    - name: Health check
+      run: |
+        echo "Running health checks..."
+        # Add health check commands
+        # curl -f https://staging.your-domain.com/health || exit 1
+    
+    - name: Notify deployment
+      if: always()
+      run: |
+        echo "Deployment completed with status: ${{ job.status }}"
+        # Add notification (Slack, Discord, email, etc.)
+
+  deploy-production:
+    if: github.event.inputs.environment == 'production'
+    runs-on: ubuntu-latest
+    environment: production
+    needs: []  # Add dependencies if needed (e.g., needs: [deploy-staging])
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+    
+    - name: Deploy to production
+      run: |
+        echo "Deploying to production environment..."
+        # Add production deployment commands
+    
+    - name: Health check
+      run: |
+        echo "Running production health checks..."
+        # curl -f https://your-domain.com/health || exit 1
+    
+    - name: Create release notes
+      if: startsWith(github.ref, 'refs/tags/v')
+      run: |
+        echo "Creating release notes..."
+        # Generate release notes from commits
+    
+    - name: Notify deployment
+      if: always()
+      run: |
+        echo "Production deployment completed with status: ${{ job.status }}"
+
+  docker-compose-deploy:
+    if: github.event.inputs.environment != 'production'
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+    
+    - name: Set up SSH
+      uses: webfactory/ssh-agent@v0.8.0
+      with:
+        ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+    
+    - name: Deploy with Docker Compose
+      run: |
+        # Example deployment to remote server
+        # ssh user@server 'cd /path/to/app && \
+        #   git pull && \
+        #   docker-compose pull && \
+        #   docker-compose up -d --remove-orphans'
+        echo "Docker Compose deployment would run here"
+    
+    - name: Cleanup old images
+      run: |
+        # ssh user@server 'docker image prune -af --filter "until=72h"'
+        echo "Cleanup would run here"
+

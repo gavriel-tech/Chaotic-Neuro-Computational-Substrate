@@ -1,6 +1,9 @@
 'use client';
+import { notify } from '../UI/Notification';
 
 import React, { useState, useEffect } from 'react';
+
+const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000';
 
 // ============================================================================
 // Heterogeneous Node Configuration Panel
@@ -37,22 +40,41 @@ export const HeterogeneousNodePanel: React.FC<HeterogeneousNodePanelProps> = ({ 
   };
 
   const applyConfiguration = async () => {
+    if (nodeConfigs.length === 0) {
+      notify.warning('Add at least one node type to configure.');
+      return;
+    }
+
+    const nodeTypes = [...nodeConfigs]
+      .sort((a, b) => a.node_id - b.node_id)
+      .map((cfg) => {
+        switch (cfg.type) {
+          case 'continuous':
+            return 1;
+          case 'discrete':
+            return 2;
+          case 'spin':
+          default:
+            return 0;
+        }
+      });
+
     try {
-      const response = await fetch('http://localhost:8000/thrml/heterogeneous/configure', {
+      const response = await fetch(`${API_BASE}/thrml/heterogeneous/configure`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ node_configs: nodeConfigs })
+        body: JSON.stringify({ node_types: nodeTypes })
       });
       
       if (response.ok) {
-        alert('Heterogeneous configuration applied successfully!');
+        notify.success('Heterogeneous configuration applied successfully!');
         onClose();
       } else {
-        alert('Failed to apply configuration');
+        notify.error('Failed to apply configuration');
       }
     } catch (err) {
       console.error('Failed to configure heterogeneous nodes:', err);
-      alert('Error applying configuration');
+      notify.error('Error applying configuration');
     }
   };
 
@@ -212,9 +234,15 @@ export const ConditionalSamplingPanel: React.FC<ConditionalSamplingPanelProps> =
 
   const fetchClampedNodes = async () => {
     try {
-      const response = await fetch('http://localhost:8000/thrml/clamped-nodes');
+      const response = await fetch(`${API_BASE}/thrml/clamped-nodes`);
       const data = await response.json();
-      setCurrentClamped(data.clamped_nodes || []);
+      const mapped = Array.isArray(data?.clamped_nodes)
+        ? data.clamped_nodes.map((nodeId: number, index: number) => ({
+            node_id: nodeId,
+            value: Array.isArray(data?.values) ? data.values[index] ?? 0 : 0,
+          }))
+        : [];
+      setCurrentClamped(mapped);
     } catch (err) {
       console.error('Failed to fetch clamped nodes:', err);
     }
@@ -230,42 +258,52 @@ export const ConditionalSamplingPanel: React.FC<ConditionalSamplingPanelProps> =
   };
 
   const applyClamps = async () => {
+    if (clampedNodes.length === 0) {
+      notify.warning('Add at least one clamp before applying.');
+      return;
+    }
+
+    const nodeIds = clampedNodes.map((c) => c.node_id);
+    const values = clampedNodes.map((c) => c.value);
+
     try {
-      const response = await fetch('http://localhost:8000/thrml/clamp-nodes', {
+      const response = await fetch(`${API_BASE}/thrml/clamp-nodes`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ clamped_nodes: clampedNodes })
+        body: JSON.stringify({ node_ids: nodeIds, values })
       });
       
       if (response.ok) {
-        alert('Node clamping applied successfully!');
+        notify.success('Node clamping applied successfully!');
         fetchClampedNodes();
       } else {
-        alert('Failed to apply clamping');
+        notify.error('Failed to apply clamping');
       }
     } catch (err) {
       console.error('Failed to clamp nodes:', err);
-      alert('Error applying clamping');
+      notify.error('Error applying clamping');
     }
   };
 
   const sampleConditional = async () => {
     try {
-      const response = await fetch('http://localhost:8000/thrml/sample-conditional', {
+      const response = await fetch(`${API_BASE}/thrml/sample-conditional`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ clamped_nodes: clampedNodes, num_samples: 1 })
+        headers: { 'Content-Type': 'application/json' }
       });
       
       if (response.ok) {
         const result = await response.json();
-        alert(`Conditional sample generated! ${result.samples.length} samples`);
+        notify.success('Conditional sample generated!');
+        if (Array.isArray(result.sample)) {
+          console.debug('Conditional sample:', result.sample);
+        }
       } else {
-        alert('Failed to generate sample');
+        notify.error('Failed to generate sample');
       }
     } catch (err) {
       console.error('Failed to sample conditionally:', err);
-      alert('Error generating sample');
+      notify.error('Error generating sample');
     }
   };
 
@@ -410,7 +448,7 @@ export const HigherOrderInteractionsPanel: React.FC<HigherOrderInteractionsPanel
 
   const fetchInteractions = async () => {
     try {
-      const response = await fetch('http://localhost:8000/thrml/interactions/list');
+      const response = await fetch(`${API_BASE}/thrml/interactions/list`);
       const data = await response.json();
       setInteractions(data.interactions || []);
     } catch (err) {
@@ -422,12 +460,12 @@ export const HigherOrderInteractionsPanel: React.FC<HigherOrderInteractionsPanel
     const nodeIds = newInteraction.node_ids.split(',').map(id => parseInt(id.trim())).filter(id => !isNaN(id));
     
     if (nodeIds.length < 3) {
-      alert('Please enter at least 3 node IDs separated by commas');
+      notify.error('Please enter at least 3 node IDs separated by commas');
       return;
     }
 
     try {
-      const response = await fetch('http://localhost:8000/thrml/interactions/add', {
+      const response = await fetch(`${API_BASE}/thrml/interactions/add`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -437,33 +475,33 @@ export const HigherOrderInteractionsPanel: React.FC<HigherOrderInteractionsPanel
       });
       
       if (response.ok) {
-        alert('Interaction added successfully!');
+        notify.success('Interaction added successfully!');
         setNewInteraction({ node_ids: '', coupling_strength: 1.0 });
         fetchInteractions();
       } else {
-        alert('Failed to add interaction');
+        notify.error('Failed to add interaction');
       }
     } catch (err) {
       console.error('Failed to add interaction:', err);
-      alert('Error adding interaction');
+      notify.error('Error adding interaction');
     }
   };
 
   const deleteInteraction = async (interactionId: string) => {
     try {
-      const response = await fetch(`http://localhost:8000/thrml/interactions/${interactionId}`, {
+      const response = await fetch(`${API_BASE}/thrml/interactions/${interactionId}`, {
         method: 'DELETE'
       });
       
       if (response.ok) {
-        alert('Interaction deleted successfully!');
+        notify.success('Interaction deleted successfully!');
         fetchInteractions();
       } else {
-        alert('Failed to delete interaction');
+        notify.error('Failed to delete interaction');
       }
     } catch (err) {
       console.error('Failed to delete interaction:', err);
-      alert('Error deleting interaction');
+      notify.error('Error deleting interaction');
     }
   };
 
@@ -577,7 +615,7 @@ export const EnergyFactorsPanel: React.FC<EnergyFactorsPanelProps> = ({ onClose 
 
   const fetchFactors = async () => {
     try {
-      const response = await fetch('http://localhost:8000/thrml/factors/list');
+      const response = await fetch(`${API_BASE}/thrml/factors/list`);
       const data = await response.json();
       setFactors(data.factors || []);
     } catch (err) {
@@ -587,7 +625,7 @@ export const EnergyFactorsPanel: React.FC<EnergyFactorsPanelProps> = ({ onClose 
 
   const fetchLibrary = async () => {
     try {
-      const response = await fetch('http://localhost:8000/thrml/factors/library');
+      const response = await fetch(`${API_BASE}/thrml/factors/library`);
       const data = await response.json();
       setFactorLibrary(data.available_factors || []);
     } catch (err) {
@@ -597,7 +635,7 @@ export const EnergyFactorsPanel: React.FC<EnergyFactorsPanelProps> = ({ onClose 
 
   const addFactor = async () => {
     try {
-      const response = await fetch('http://localhost:8000/thrml/factors/add', {
+      const response = await fetch(`${API_BASE}/thrml/factors/add`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -608,15 +646,15 @@ export const EnergyFactorsPanel: React.FC<EnergyFactorsPanelProps> = ({ onClose 
       });
       
       if (response.ok) {
-        alert('Energy factor added successfully!');
+        notify.success('Energy factor added successfully!');
         setFactorParams({});
         fetchFactors();
       } else {
-        alert('Failed to add factor');
+        notify.error('Failed to add factor');
       }
     } catch (err) {
       console.error('Failed to add factor:', err);
-      alert('Error adding factor');
+      notify.error('Error adding factor');
     }
   };
 

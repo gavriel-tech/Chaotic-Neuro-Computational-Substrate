@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { CustomSelect } from '../UI/CustomSelect';
 
 interface VisualizerProps {
@@ -81,6 +81,24 @@ export const ProductionOscilloscope: React.FC<VisualizerProps> = ({
     const interval = setInterval(fetchData, 33); // ~30 Hz
     return () => clearInterval(interval);
   }, [nodeId]);
+
+  const calculateMeasurements = useCallback((values: number[]) => {
+    const rms = Math.sqrt(values.reduce((sum, v) => sum + v * v, 0) / values.length);
+    const max = Math.max(...values);
+    const min = Math.min(...values);
+    const peakToPeak = max - min;
+    
+    // Simple frequency estimation via zero crossings
+    let crossings = 0;
+    for (let i = 1; i < values.length; i++) {
+      if ((values[i-1] < 0 && values[i] >= 0) || (values[i-1] >= 0 && values[i] < 0)) {
+        crossings++;
+      }
+    }
+    const frequency = crossings / 2 / (data.time[data.time.length - 1] - data.time[0] || 1);
+
+    return { rms, peakToPeak, frequency };
+  }, [data]);
 
   // Render oscilloscope
   useEffect(() => {
@@ -182,25 +200,7 @@ export const ProductionOscilloscope: React.FC<VisualizerProps> = ({
       ctx.fillText(`P-P: ${measurements.peakToPeak.toFixed(3)}`, width - 120, 17);
       ctx.fillText(`Freq: ${measurements.frequency.toFixed(1)} Hz`, width - 120, 29);
     }
-  }, [data, width, height, triggerMode, triggerLevel, timeScale, voltageScale, showMeasurements, persistence]);
-
-  const calculateMeasurements = (values: number[]) => {
-    const rms = Math.sqrt(values.reduce((sum, v) => sum + v * v, 0) / values.length);
-    const max = Math.max(...values);
-    const min = Math.min(...values);
-    const peakToPeak = max - min;
-    
-    // Simple frequency estimation via zero crossings
-    let crossings = 0;
-    for (let i = 1; i < values.length; i++) {
-      if ((values[i-1] < 0 && values[i] >= 0) || (values[i-1] >= 0 && values[i] < 0)) {
-        crossings++;
-      }
-    }
-    const frequency = crossings / 2 / (data.time[data.time.length - 1] - data.time[0] || 1);
-
-    return { rms, peakToPeak, frequency };
-  };
+  }, [data, width, height, triggerMode, triggerLevel, timeScale, voltageScale, showMeasurements, persistence, calculateMeasurements]);
 
   return <canvas ref={canvasRef} width={width} height={height} />;
 };

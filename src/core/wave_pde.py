@@ -49,25 +49,33 @@ def fdtd_step_wave(
     source_S: jnp.ndarray,
     dt: float,
     c: float,
-    dx: float = 1.0
+    dx: float = 1.0,
+    thrml_energy: float = 0.0,
+    thrml_temperature: float = 1.0
 ) -> jnp.ndarray:
     """
-    One FDTD step for 2D wave equation.
+    One FDTD step for 2D wave equation with THRML energy modulation.
     
-    Wave equation: ∂²P/∂t² = c² ∇²P + S(r,t)
+    Wave equation: ∂²P/∂t² = c²(E) ∇²P + S(r,t) - γ(T) ∂P/∂t
     
-    FDTD update:
-        P^{t+1} = 2*P^t - P^{t-1} + (c*dt)² * ∇²P^t + dt² * S^t
+    THRML coupling:
+    - Wave speed modulated by THRML energy: c_eff = c * (1 + α * E_THRML)
+    - Damping modulated by THRML temperature: γ = γ₀ * (1 + β * T_THRML)
     
-    Applies absorbing boundary conditions (zero outer 2 pixels).
+    This creates bidirectional coupling:
+    - THRML energy landscapes shape wave propagation
+    - Higher energy → faster waves (information spreading)
+    - Higher temperature → more damping (entropy dissipation)
     
     Args:
         p_t: (GRID_W, GRID_H) current field
         p_tm1: (GRID_W, GRID_H) previous field
         source_S: (GRID_W, GRID_H) source term
         dt: time step
-        c: wave speed
+        c: base wave speed
         dx: grid spacing
+        thrml_energy: THRML system energy (normalized)
+        thrml_temperature: THRML sampling temperature
         
     Returns:
         (GRID_W, GRID_H) new field P^{t+1}
@@ -75,11 +83,25 @@ def fdtd_step_wave(
     # Compute Laplacian
     laplacian = laplacian_2d(p_t, dx)
     
-    # FDTD update formula
-    c_dt_sq = (c * dt) ** 2
+    # THRML-modulated wave speed
+    # Higher THRML energy → faster wave propagation
+    alpha_energy = 0.1  # Energy coupling strength
+    c_effective = c * (1.0 + alpha_energy * jnp.tanh(thrml_energy))
+    
+    # THRML-modulated damping
+    # Higher THRML temperature → more dissipation
+    beta_temp = 0.05  # Temperature coupling strength
+    gamma_base = 0.01  # Base damping
+    damping = gamma_base * (1.0 + beta_temp * thrml_temperature)
+    
+    # Velocity term (for damping)
+    velocity = (p_t - p_tm1) / dt
+    
+    # FDTD update formula with THRML modulation
+    c_dt_sq = (c_effective * dt) ** 2
     dt_sq = dt ** 2
     
-    p_tp1 = 2.0 * p_t - p_tm1 + c_dt_sq * laplacian + dt_sq * source_S
+    p_tp1 = 2.0 * p_t - p_tm1 + c_dt_sq * laplacian + dt_sq * source_S - damping * dt * velocity
     
     # Apply absorbing boundaries (zero outer 2 pixels)
     p_tp1 = p_tp1.at[:2, :].set(0.0)  # Top

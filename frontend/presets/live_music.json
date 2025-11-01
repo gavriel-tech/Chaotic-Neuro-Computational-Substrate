@@ -1,0 +1,285 @@
+{
+  "id": "live_music",
+  "name": "Live Chaotic Music Generation",
+  "version": "1.0",
+  "description": "Real-time musical synthesis driven by chaotic oscillators and THRML energy landscapes. Audio input modulates chaos parameters, creating responsive, unpredictable, yet musically coherent output.",
+  "category": "Creative",
+  "tags": ["music", "audio", "live", "chaos", "generative", "real-time"],
+  "author": "GMCS Team",
+  "created": "2025-10-31",
+  
+  "documentation": {
+    "overview": "This preset creates a live music synthesis system where audio input influences chaotic oscillators, which are then filtered through THRML sampling to create harmonically rich, evolving musical textures. FFT analysis extracts musical features to guide the generation.",
+    "expectedBehavior": "When audio input is present, the system responds by generating complementary musical patterns. Without input, it generates autonomous compositions. Expect drone-like textures, rhythmic pulses, and melodic fragments emerging from chaos.",
+    "parameters": {
+      "musicality": "Controls how much THRML enforces harmonic structure (0=pure chaos, 1=highly musical)",
+      "response_speed": "How quickly system reacts to audio input",
+      "harmonic_complexity": "Number of simultaneous tones (1-16)"
+    },
+    "successMetrics": [
+      "Low-latency response (<50ms) to audio input",
+      "Musically coherent output (recognizable pitches/rhythms)",
+      "Continuous evolution without repetition"
+    ]
+  },
+
+  "nodes": [
+    {
+      "id": "audio_in",
+      "type": "input",
+      "name": "Audio Input",
+      "position": {"x": 100, "y": 200},
+      "config": {
+        "source": "microphone",
+        "sample_rate": 48000,
+        "buffer_size": 512,
+        "channels": 1
+      }
+    },
+    {
+      "id": "fft_analyzer",
+      "type": "analysis",
+      "name": "FFT Spectral Analyzer",
+      "position": {"x": 300, "y": 200},
+      "config": {
+        "size": 2048,
+        "window": "hann",
+        "overlap": 0.75
+      }
+    },
+    {
+      "id": "osc_bank",
+      "type": "oscillator",
+      "name": "Chaotic Oscillator Bank",
+      "position": {"x": 500, "y": 200},
+      "config": {
+        "count": 16,
+        "alpha": 15.6,
+        "beta": 28.0,
+        "m0": -1.143,
+        "m1": -0.714,
+        "initial_state": "harmonic",
+        "enable_coupling": true,
+        "coupling_strength": 0.3
+      }
+    },
+    {
+      "id": "thrml_harmony",
+      "type": "thrml",
+      "name": "THRML Harmonic Sampler",
+      "position": {"x": 700, "y": 200},
+      "config": {
+        "num_nodes": 16,
+        "node_type": "continuous",
+        "temperature": 0.8,
+        "num_samples": 5,
+        "num_chains": 2,
+        "mode": "SPEED",
+        "custom_energy": "harmonic"
+      }
+    },
+    {
+      "id": "music_analyzer",
+      "type": "analysis",
+      "name": "Musical Pattern Analyzer",
+      "position": {"x": 900, "y": 100},
+      "config": {
+        "window_size": 480,
+        "threshold": 0.7,
+        "num_patterns": 8,
+        "mode": "musical"
+      }
+    },
+    {
+      "id": "pitch_quantizer",
+      "type": "processor",
+      "name": "Pitch Quantizer",
+      "position": {"x": 900, "y": 300},
+      "config": {
+        "scale": "chromatic",
+        "root_note": 440,
+        "tuning": "equal_temperament"
+      }
+    },
+    {
+      "id": "midi_out",
+      "type": "output",
+      "name": "MIDI Output",
+      "position": {"x": 1100, "y": 200},
+      "config": {
+        "device": "virtual",
+        "channel": 1,
+        "velocity_mode": "dynamic"
+      }
+    },
+    {
+      "id": "audio_out",
+      "type": "output",
+      "name": "Audio Output",
+      "position": {"x": 1100, "y": 350},
+      "config": {
+        "sample_rate": 48000,
+        "buffer_size": 512,
+        "synthesis_mode": "additive"
+      }
+    },
+    {
+      "id": "waveform_viz",
+      "type": "visualizer",
+      "name": "Waveform Display",
+      "position": {"x": 500, "y": 450},
+      "config": {
+        "type": "Oscilloscope",
+        "time_window": 0.1,
+        "active": true
+      }
+    },
+    {
+      "id": "spectrum_viz",
+      "type": "visualizer",
+      "name": "Spectrum Analyzer",
+      "position": {"x": 700, "y": 450},
+      "config": {
+        "type": "Spectrum",
+        "fft_size": 2048,
+        "display_range": [20, 20000],
+        "active": true
+      }
+    },
+    {
+      "id": "harmony_viz",
+      "type": "visualizer",
+      "name": "Harmonic Structure",
+      "position": {"x": 900, "y": 450},
+      "config": {
+        "type": "Circle Visualization",
+        "mode": "pitch_class",
+        "active": true
+      }
+    }
+  ],
+
+  "connections": [
+    {
+      "from": "audio_in.signal",
+      "to": "fft_analyzer.signal",
+      "description": "Incoming audio analyzed for spectral content"
+    },
+    {
+      "from": "fft_analyzer.peak_freq",
+      "to": "osc_bank.frequency_mod",
+      "description": "Detected pitch modulates oscillator frequencies"
+    },
+    {
+      "from": "fft_analyzer.spectral_centroid",
+      "to": "osc_bank.coupling_strength",
+      "description": "Brightness controls oscillator coupling"
+    },
+    {
+      "from": "osc_bank.x",
+      "to": "thrml_harmony.bias",
+      "description": "Oscillator states bias harmonic sampling"
+    },
+    {
+      "from": "thrml_harmony.samples",
+      "to": "music_analyzer.signal",
+      "description": "THRML samples analyzed for musical patterns"
+    },
+    {
+      "from": "thrml_harmony.samples",
+      "to": "pitch_quantizer.input",
+      "description": "Samples quantized to musical pitches"
+    },
+    {
+      "from": "pitch_quantizer.notes",
+      "to": "midi_out.data",
+      "description": "Quantized pitches output as MIDI"
+    },
+    {
+      "from": "pitch_quantizer.audio",
+      "to": "audio_out.signal",
+      "description": "Synthesized audio output"
+    },
+    {
+      "from": "music_analyzer.confidence",
+      "to": "thrml_harmony.temperature",
+      "description": "Pattern confidence adapts THRML temperature"
+    },
+    {
+      "from": "audio_in.signal",
+      "to": "waveform_viz.data",
+      "description": "Display input waveform"
+    },
+    {
+      "from": "fft_analyzer.magnitude",
+      "to": "spectrum_viz.data",
+      "description": "Display input spectrum"
+    },
+    {
+      "from": "pitch_quantizer.pitch_classes",
+      "to": "harmony_viz.data",
+      "description": "Display harmonic structure"
+    }
+  ],
+
+  "initialState": {
+    "description": "System starts in autonomous mode. When audio input detected, switches to responsive mode.",
+    "autoStart": true,
+    "warmupSteps": 50
+  },
+
+  "controls": {
+    "description": "Real-time musical controls",
+    "parameters": [
+      {
+        "name": "musicality",
+        "label": "Musicality (Chaos ← → Structure)",
+        "node": "thrml_harmony",
+        "field": "config.temperature",
+        "type": "slider",
+        "min": 0.1,
+        "max": 3.0,
+        "step": 0.1,
+        "default": 0.8
+      },
+      {
+        "name": "response_speed",
+        "label": "Response Speed",
+        "node": "osc_bank",
+        "field": "config.coupling_strength",
+        "type": "slider",
+        "min": 0.0,
+        "max": 1.0,
+        "step": 0.05,
+        "default": 0.3
+      },
+      {
+        "name": "voices",
+        "label": "Number of Voices",
+        "node": "osc_bank",
+        "field": "config.count",
+        "type": "discrete",
+        "options": [1, 2, 4, 8, 16, 32],
+        "default": 16
+      },
+      {
+        "name": "scale",
+        "label": "Musical Scale",
+        "node": "pitch_quantizer",
+        "field": "config.scale",
+        "type": "select",
+        "options": ["chromatic", "major", "minor", "pentatonic", "whole_tone", "arabic", "microtonal"],
+        "default": "chromatic"
+      }
+    ]
+  },
+
+  "requirements": {
+    "minGPUMemory": "2GB",
+    "recommendedGPUMemory": "4GB",
+    "audioInput": true,
+    "audioOutput": true,
+    "lowLatency": true
+  }
+}
+

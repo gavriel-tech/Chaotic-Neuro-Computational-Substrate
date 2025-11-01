@@ -1,0 +1,35 @@
+{
+  "id": "molecular_design",
+  "name": "Molecular Drug Design",
+  "version": "1.0",
+  "description": "Discover drug candidates by exploring molecular space with chaos and ML. Builds molecules from fragments, simulates binding, predicts properties.",
+  "category": "Scientific",
+  "tags": ["molecular", "drug-discovery", "chemistry", "ml"],
+  "author": "GMCS Team",
+  "created": "2025-10-31",
+  
+  "nodes": [
+    {"id": "fragment_lib", "type": "input", "name": "Fragment Library", "position": {"x": 100, "y": 300}, "config": {"library": "common_pharmacophores", "num_fragments": 1000}},
+    {"id": "molecule_builder", "type": "processor", "name": "Molecule Builder", "position": {"x": 300, "y": 300}, "config": {"method": "fragment_assembly", "max_atoms": 50, "valence_check": true}},
+    {"id": "chaos_combinator", "type": "oscillator", "name": "Combination Explorer", "position": {"x": 300, "y": 450}, "config": {"count": 64}},
+    {"id": "energy_calc", "type": "processor", "name": "Energy Calculator", "position": {"x": 550, "y": 300}, "config": {"method": "molecular_mechanics", "force_field": "mmff94"}},
+    {"id": "thrml_filter", "type": "thrml", "name": "Property Filter", "position": {"x": 550, "y": 450}, "config": {"num_nodes": 64, "temperature": 1.0, "custom_energy": "drug_likeness"}},
+    {"id": "binder_predictor", "type": "ml", "name": "Binding Predictor", "position": {"x": 800, "y": 300}, "config": {"type": "MLP Predictor", "input_dim": 200, "hidden_dims": [512, 256, 128], "output_dim": 1}},
+    {"id": "best_molecules", "type": "storage", "name": "Top Candidates", "position": {"x": 1050, "y": 300}, "config": {"top_k": 20, "format": "sdf"}},
+    {"id": "viz_molecule", "type": "visualizer", "name": "3D Molecule", "position": {"x": 550, "y": 600}, "config": {"type": "3D Molecule", "active": true}},
+    {"id": "viz_binding", "type": "visualizer", "name": "Binding Score", "position": {"x": 1050, "y": 600}, "config": {"type": "Time Series", "signals": ["binding_score", "best_score"], "active": true}}
+  ],
+  
+  "connections": [
+    {"from": "fragment_lib.fragments", "to": "molecule_builder.input"},
+    {"from": "chaos_combinator.states", "to": "molecule_builder.combination_indices"},
+    {"from": "molecule_builder.molecule", "to": "energy_calc.input"},
+    {"from": "energy_calc.energy", "to": "thrml_filter.bias"},
+    {"from": "thrml_filter.samples", "to": "molecule_builder.valid_mask"},
+    {"from": "molecule_builder.molecule", "to": "binder_predictor.features"},
+    {"from": "binder_predictor.prediction", "to": "best_molecules.candidates"},
+    {"from": "molecule_builder.molecule", "to": "viz_molecule.data"},
+    {"from": "binder_predictor.prediction", "to": "viz_binding.binding_score"}
+  ]
+}
+

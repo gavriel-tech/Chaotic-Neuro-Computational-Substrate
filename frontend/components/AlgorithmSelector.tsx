@@ -7,7 +7,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { useSimulationStore } from '@/stores/simulationStore';
+import { useSimulationStore } from '@/lib/stores/simulation';
 
 interface Algorithm {
   id: number;

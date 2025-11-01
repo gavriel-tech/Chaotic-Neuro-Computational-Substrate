@@ -4,6 +4,7 @@ import { useState } from "react";
 import clsx from "clsx";
 import { useControlsStore } from "@/lib/stores/controls";
 import { useSimulationStore, MAX_SIMULATION_NODES } from "@/lib/stores/simulation";
+import { notify } from "@/components/UI/Notification";
 import { THRMLControls } from "./THRMLControls";
 
 const sliderClass =
@@ -11,21 +12,51 @@ const sliderClass =
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
-async function postJSON<T>(path: string, body: unknown): Promise<T | null> {
+interface NodeResponsePayload {
+  status: string;
+  node_id?: number;
+  message?: string;
+  data?: Record<string, unknown>;
+}
+
+interface NodeListItemPayload {
+  node_id: number;
+}
+
+interface NodeListResponsePayload {
+  nodes: NodeListItemPayload[];
+}
+
+async function requestJSON<T>(path: string, init: RequestInit = {}): Promise<T | null> {
   try {
-    const response = await fetch(`${API_BASE}${path}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
+    const response = await fetch(`${API_BASE}${path}`, init);
     if (!response.ok) {
-      throw new Error(await response.text());
+      const text = await response.text();
+      throw new Error(text || `Request failed with status ${response.status}`);
     }
     return (await response.json()) as T;
   } catch (error) {
     console.warn("Control panel request failed", error);
     return null;
   }
+}
+
+async function postJSON<T>(path: string, body: unknown): Promise<T | null> {
+  return requestJSON<T>(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+async function deleteJSON<T>(path: string): Promise<T | null> {
+  return requestJSON<T>(path, {
+    method: "DELETE",
+  });
+}
+
+async function getJSON<T>(path: string): Promise<T | null> {
+  return requestJSON<T>(path);
 }
 
 export default function ControlPanel() {
@@ -49,14 +80,42 @@ export default function ControlPanel() {
 
   const handleAddNode = async () => {
     setPending(true);
-    await postJSON("/node/add", { preset: "default" });
-    setPending(false);
+    try {
+      const payload = {
+        position: [128, 128],
+        config: {},
+        chain: [],
+        initial_perturbation: 0.1,
+      };
+      const result = await postJSON<NodeResponsePayload>("/node/add", payload);
+      if (!result || result.status !== "success") {
+        notify.error(result?.message ?? "Failed to add node");
+        return;
+      }
+      notify.success(result.message ?? "Node added");
+    } finally {
+      setPending(false);
+    }
   };
 
   const handleRemoveNode = async () => {
     setPending(true);
-    await postJSON("/node/remove", { index: activeCount - 1 });
-    setPending(false);
+    try {
+      const list = await getJSON<NodeListResponsePayload>("/nodes");
+      if (!list || list.nodes.length === 0) {
+        notify.warning("No active nodes to remove");
+        return;
+      }
+      const targetId = list.nodes[list.nodes.length - 1].node_id;
+      const result = await deleteJSON<NodeResponsePayload>(`/node/${targetId}`);
+      if (!result || result.status !== "success") {
+        notify.error(result?.message ?? "Failed to remove node");
+        return;
+      }
+      notify.success(result.message ?? `Node ${targetId} removed`);
+    } finally {
+      setPending(false);
+    }
   };
 
   return (

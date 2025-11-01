@@ -1,0 +1,34 @@
+{
+  "id": "solar_opt",
+  "name": "Solar Cell Design Optimization",
+  "version": "1.0",
+  "description": "Discover novel solar cell materials and structures by simulating photon-to-electron conversion. Uses chaos for material exploration and ML to predict efficiency.",
+  "category": "Scientific",
+  "tags": ["solar", "energy", "optimization", "photonics", "materials"],
+  "author": "GMCS Team",
+  "created": "2025-10-31",
+  
+  "nodes": [
+    {"id": "material_config", "type": "input", "name": "Material Parameters", "position": {"x": 100, "y": 300}, "config": {"parameters": ["bandgap", "absorption", "carrier_mobility", "thickness"]}},
+    {"id": "photon_sim", "type": "processor", "name": "Photon Absorption Simulator", "position": {"x": 350, "y": 300}, "config": {"method": "raytracing", "spectrum": "am1.5", "num_photons": 100000}},
+    {"id": "carrier_dynamics", "type": "processor", "name": "Carrier Dynamics", "position": {"x": 600, "y": 300}, "config": {"method": "drift_diffusion", "recombination": true}},
+    {"id": "efficiency_calc", "type": "analysis", "name": "Efficiency Calculator", "position": {"x": 850, "y": 300}, "config": {"metrics": ["jsc", "voc", "ff", "pce"]}},
+    {"id": "optimizer", "type": "control", "name": "Material Optimizer", "position": {"x": 1100, "y": 300}, "config": {"type": "Parameter Optimizer", "target_metric": "pce", "learning_rate": 0.02}},
+    {"id": "chaos_explorer", "type": "oscillator", "name": "Material Space Explorer", "position": {"x": 350, "y": 150}, "config": {"count": 8, "coupling_strength": 0.4}},
+    {"id": "ml_predictor", "type": "ml", "name": "Efficiency Predictor", "position": {"x": 600, "y": 150}, "config": {"type": "MLP Predictor", "input_dim": 10, "hidden_dims": [128, 64], "output_dim": 1}},
+    {"id": "viz_results", "type": "visualizer", "name": "Optimization Progress", "position": {"x": 850, "y": 550}, "config": {"type": "Time Series", "signals": ["best_pce", "current_pce"], "active": true}}
+  ],
+  
+  "connections": [
+    {"from": "material_config.parameters", "to": "photon_sim.material"},
+    {"from": "photon_sim.absorbed_photons", "to": "carrier_dynamics.generation"},
+    {"from": "carrier_dynamics.current", "to": "efficiency_calc.input"},
+    {"from": "efficiency_calc.pce", "to": "optimizer.current_value"},
+    {"from": "optimizer.control_signal", "to": "material_config.parameters"},
+    {"from": "chaos_explorer.states", "to": "material_config.exploration"},
+    {"from": "material_config.parameters", "to": "ml_predictor.features"},
+    {"from": "ml_predictor.prediction", "to": "optimizer.target_value"},
+    {"from": "efficiency_calc.pce", "to": "viz_results.current_pce"}
+  ]
+}
+

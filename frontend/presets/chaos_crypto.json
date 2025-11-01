@@ -1,0 +1,366 @@
+{
+  "id": "chaos_crypto",
+  "name": "Chaos-Based Cryptography",
+  "version": "1.0",
+  "description": "Demonstrates chaos-based cryptographic primitives: stream cipher, hashing, key derivation, random number generation, and statistical analysis. Shows how chaotic dynamics can be harnessed for secure communication.",
+  "category": "Security",
+  "tags": ["cryptography", "chaos", "security", "encryption", "randomness"],
+  "author": "GMCS Team",
+  "created": "2025-10-31",
+  
+  "documentation": {
+    "overview": "This preset demonstrates practical applications of chaotic dynamics in cryptography. A Chua oscillator's sensitive dependence on initial conditions creates a pseudorandom keystream for encryption. Multiple coupled oscillators generate cryptographically secure random numbers. Statistical tests validate randomness quality.",
+    "expectedBehavior": "The system encrypts/decrypts messages using chaotic stream cipher, generates random keys, computes chaos-based hashes, and validates output quality with NIST-inspired tests. Lyapunov analysis shows the security foundation.",
+    "parameters": {
+      "oscillator_coupling": "Controls RNG entropy source coupling (0.1-0.5 recommended)",
+      "cipher_iterations": "Number of chaotic iterations per encryption byte",
+      "hash_rounds": "Mixing rounds for hash function (8-32 recommended)"
+    },
+    "successMetrics": [
+      "Encryption/decryption produces correct plaintext",
+      "RNG passes >75% of randomness tests",
+      "Hash avalanche effect >45% (bit flip causes 45%+ hash change)",
+      "Lyapunov exponent remains positive (chaotic regime)"
+    ]
+  },
+
+  "nodes": [
+    {
+      "id": "plaintext_input",
+      "type": "input",
+      "name": "Plaintext Input",
+      "position": {"x": 100, "y": 200},
+      "config": {
+        "type": "data",
+        "default_value": "Hello, Chaos Cryptography!",
+        "data_type": "string"
+      }
+    },
+    {
+      "id": "key_generator",
+      "type": "generator",
+      "name": "Random Key Generator",
+      "position": {"x": 100, "y": 350},
+      "config": {
+        "type": "Random Number Generator",
+        "oscillator_count": 16,
+        "coupling_strength": 0.3,
+        "output_bytes": 32
+      }
+    },
+    {
+      "id": "stream_cipher",
+      "type": "processor",
+      "name": "Chaos Stream Cipher",
+      "position": {"x": 400, "y": 200},
+      "config": {
+        "type": "ChaosStreamCipher",
+        "oscillator_count": 3,
+        "alpha": 15.6,
+        "beta": 28.0,
+        "m0": -1.143,
+        "m1": -0.714
+      }
+    },
+    {
+      "id": "decryption_cipher",
+      "type": "processor",
+      "name": "Decryption Cipher",
+      "position": {"x": 700, "y": 200},
+      "config": {
+        "type": "ChaosStreamCipher",
+        "oscillator_count": 3,
+        "alpha": 15.6,
+        "beta": 28.0,
+        "m0": -1.143,
+        "m1": -0.714
+      }
+    },
+    {
+      "id": "hash_function",
+      "type": "processor",
+      "name": "Chaos Hash Function",
+      "position": {"x": 400, "y": 400},
+      "config": {
+        "type": "HashFunction",
+        "output_bits": 256,
+        "rounds": 16,
+        "oscillator_count": 4
+      }
+    },
+    {
+      "id": "key_derivation",
+      "type": "processor",
+      "name": "Key Derivation Function",
+      "position": {"x": 100, "y": 550},
+      "config": {
+        "type": "KeyDerivation",
+        "iterations": 10000,
+        "key_length": 32
+      }
+    },
+    {
+      "id": "crypto_analyzer",
+      "type": "processor",
+      "name": "Randomness Analyzer",
+      "position": {"x": 400, "y": 550},
+      "config": {
+        "type": "CryptoAnalyzer",
+        "tests": ["frequency", "runs", "longest_run", "entropy"]
+      }
+    },
+    {
+      "id": "lyapunov_calc",
+      "type": "analysis",
+      "name": "Lyapunov Calculator",
+      "position": {"x": 700, "y": 400},
+      "config": {
+        "window_size": 1000,
+        "embedding_dim": 3,
+        "time_delay": 1
+      }
+    },
+    {
+      "id": "oscillator_monitor",
+      "type": "oscillator",
+      "name": "Cipher Oscillator Monitor",
+      "position": {"x": 1000, "y": 200},
+      "config": {
+        "count": 3,
+        "alpha": 15.6,
+        "beta": 28.0,
+        "m0": -1.143,
+        "m1": -0.714,
+        "visualize": true
+      }
+    },
+    {
+      "id": "attractor_viz",
+      "type": "visualizer",
+      "name": "Chaotic Attractor Visualization",
+      "position": {"x": 1000, "y": 450},
+      "config": {
+        "type": "3D Attractor",
+        "trail_length": 1000,
+        "color_mode": "velocity",
+        "active": true
+      }
+    },
+    {
+      "id": "security_metrics",
+      "type": "visualizer",
+      "name": "Security Metrics Dashboard",
+      "position": {"x": 400, "y": 750},
+      "config": {
+        "type": "Time Series",
+        "signals": ["lyapunov_exponent", "entropy", "test_pass_rate"],
+        "history_length": 500,
+        "active": true
+      }
+    },
+    {
+      "id": "encryption_viz",
+      "type": "visualizer",
+      "name": "Encryption Visualization",
+      "position": {"x": 700, "y": 600},
+      "config": {
+        "type": "Binary Heatmap",
+        "display_mode": "hex",
+        "compare_mode": true,
+        "active": true
+      }
+    }
+  ],
+
+  "connections": [
+    {
+      "from": "plaintext_input.data",
+      "to": "stream_cipher.data",
+      "description": "Plaintext to be encrypted"
+    },
+    {
+      "from": "key_generator.random_bytes",
+      "to": "stream_cipher.key",
+      "description": "Random encryption key"
+    },
+    {
+      "from": "key_generator.random_bytes",
+      "to": "decryption_cipher.key",
+      "description": "Same key for decryption"
+    },
+    {
+      "from": "stream_cipher.output",
+      "to": "decryption_cipher.data",
+      "description": "Ciphertext to decrypt"
+    },
+    {
+      "from": "stream_cipher.output",
+      "to": "hash_function.data",
+      "description": "Hash the ciphertext"
+    },
+    {
+      "from": "plaintext_input.data",
+      "to": "key_derivation.password",
+      "description": "Derive key from input"
+    },
+    {
+      "from": "key_generator.random_bytes",
+      "to": "crypto_analyzer.data",
+      "description": "Test random number quality"
+    },
+    {
+      "from": "stream_cipher.keystream",
+      "to": "lyapunov_calc.signal",
+      "description": "Analyze chaotic keystream"
+    },
+    {
+      "from": "stream_cipher.keystream",
+      "to": "oscillator_monitor.modulation",
+      "description": "Visualize cipher dynamics"
+    },
+    {
+      "from": "oscillator_monitor.x",
+      "to": "attractor_viz.x",
+      "description": "X coordinate for attractor"
+    },
+    {
+      "from": "oscillator_monitor.y",
+      "to": "attractor_viz.y",
+      "description": "Y coordinate for attractor"
+    },
+    {
+      "from": "oscillator_monitor.z",
+      "to": "attractor_viz.z",
+      "description": "Z coordinate for attractor"
+    },
+    {
+      "from": "lyapunov_calc.exponent",
+      "to": "security_metrics.lyapunov_exponent",
+      "description": "Track chaos level"
+    },
+    {
+      "from": "crypto_analyzer.entropy_test.entropy",
+      "to": "security_metrics.entropy",
+      "description": "Track entropy quality"
+    },
+    {
+      "from": "crypto_analyzer.overall.pass_rate",
+      "to": "security_metrics.test_pass_rate",
+      "description": "Track test success rate"
+    },
+    {
+      "from": "plaintext_input.data",
+      "to": "encryption_viz.original",
+      "description": "Original plaintext"
+    },
+    {
+      "from": "stream_cipher.output",
+      "to": "encryption_viz.encrypted",
+      "description": "Encrypted ciphertext"
+    },
+    {
+      "from": "decryption_cipher.output",
+      "to": "encryption_viz.decrypted",
+      "description": "Decrypted result"
+    }
+  ],
+
+  "initialState": {
+    "description": "Preset initializes with default message and generates random key. Cipher begins in transient phase for ~5 iterations before reaching chaotic attractor.",
+    "autoStart": true,
+    "warmupSteps": 10
+  },
+
+  "controls": {
+    "description": "User-adjustable cryptographic parameters",
+    "parameters": [
+      {
+        "name": "cipher_alpha",
+        "label": "Cipher Oscillator Alpha",
+        "node": "stream_cipher",
+        "field": "config.alpha",
+        "type": "slider",
+        "min": 10.0,
+        "max": 20.0,
+        "step": 0.1,
+        "default": 15.6
+      },
+      {
+        "name": "rng_coupling",
+        "label": "RNG Oscillator Coupling",
+        "node": "key_generator",
+        "field": "config.coupling_strength",
+        "type": "slider",
+        "min": 0.0,
+        "max": 1.0,
+        "step": 0.05,
+        "default": 0.3
+      },
+      {
+        "name": "hash_rounds",
+        "label": "Hash Mixing Rounds",
+        "node": "hash_function",
+        "field": "config.rounds",
+        "type": "slider",
+        "min": 4,
+        "max": 32,
+        "step": 1,
+        "default": 16
+      },
+      {
+        "name": "kdf_iterations",
+        "label": "KDF Iterations",
+        "node": "key_derivation",
+        "field": "config.iterations",
+        "type": "slider",
+        "min": 1000,
+        "max": 50000,
+        "step": 1000,
+        "default": 10000
+      }
+    ],
+    "actions": [
+      {
+        "id": "generate_new_key",
+        "label": "Generate New Key",
+        "description": "Generate fresh random encryption key",
+        "action": "trigger_node",
+        "target": "key_generator"
+      },
+      {
+        "id": "run_tests",
+        "label": "Run Statistical Tests",
+        "description": "Execute full NIST test suite",
+        "action": "trigger_node",
+        "target": "crypto_analyzer"
+      }
+    ]
+  },
+
+  "requirements": {
+    "minGPUMemory": "2GB",
+    "recommendedGPUMemory": "4GB",
+    "cpuCores": 2,
+    "jaxSupport": false,
+    "notes": "Cryptographic operations are CPU-based for security"
+  },
+
+  "educational": {
+    "concepts": [
+      "Chaos-based cryptography",
+      "Sensitive dependence on initial conditions",
+      "Lyapunov exponents and security",
+      "Statistical randomness testing",
+      "Stream cipher design",
+      "Cryptographic hash functions",
+      "Key derivation functions"
+    ],
+    "references": [
+      "Chaos-Based Cryptography - Kocarev & Lian (2011)",
+      "NIST SP 800-22: Statistical Test Suite for Random Number Generators",
+      "Chua's Circuit: A Paradigm for Chaos - Chua (1993)"
+    ]
+  },
+
+  "security_notice": "⚠️ This is a DEMONSTRATION of chaos-based cryptography concepts. For production security, use established cryptographic libraries (e.g., OpenSSL, libsodium). Chaos-based crypto is an active research area and NOT recommended for real-world security without extensive analysis."
+}

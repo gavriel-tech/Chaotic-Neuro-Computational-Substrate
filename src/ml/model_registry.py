@@ -1,405 +1,588 @@
 """
-ML Model Registry for GMCS.
+Model Registry for GMCS.
 
-Centralized registry for managing multiple ML models, their metadata,
-and integration with the GMCS simulation.
+Central registry for pre-trained models, providing easy access to
+models from HuggingFace Hub, local storage, and custom definitions.
+
+Key features:
+- Model catalog with metadata
+- HuggingFace Hub integration
+- Local model management
+- Model versioning
+- Automatic downloading
+- Model search and filtering
+
+Use cases:
+- Browse available models
+- Load pre-trained models
+- Register custom models
+- Version management
 """
 
-from typing import Dict, Any, Optional, List, Union
-from datetime import datetime
+from typing import Optional, Dict, Any, List, Tuple, Union
 from pathlib import Path
+from dataclasses import dataclass, asdict
 import json
+import os
 
-import jax.numpy as jnp
+try:
+    from transformers import AutoModel, AutoTokenizer, AutoModelForCausalLM
+    TRANSFORMERS_AVAILABLE = True
+except ImportError:
+    TRANSFORMERS_AVAILABLE = False
 
-from src.ml.pytorch_integration import PyTorchModelWrapper, PYTORCH_AVAILABLE
-from src.ml.tensorflow_integration import TensorFlowModelWrapper, TENSORFLOW_AVAILABLE
-from src.ml.huggingface_integration import HuggingFaceModelWrapper, HUGGINGFACE_AVAILABLE
+try:
+    import torch
+    PYTORCH_AVAILABLE = True
+except ImportError:
+    PYTORCH_AVAILABLE = False
 
 
+# ============================================================================
+# Model Metadata
+# ============================================================================
+
+@dataclass
 class ModelMetadata:
-    """Metadata for a registered model."""
+    """
+    Metadata for a registered model.
+    """
+    model_id: str
+    name: str
+    model_type: str  # 'transformer', 'diffusion', 'gan', 'supervised', 'rl'
+    framework: str  # 'pytorch', 'tensorflow', 'jax'
+    task: str  # 'classification', 'generation', 'embedding', etc.
     
-    def __init__(
-        self,
-        model_id: str,
-        model_type: str,
-        name: str,
-        description: str = "",
-        framework: str = "pytorch",
-        input_shape: Optional[List[int]] = None,
-        output_shape: Optional[List[int]] = None,
-        tags: Optional[List[str]] = None
-    ):
-        """
-        Initialize model metadata.
-        
-        Args:
-            model_id: Unique model identifier
-            model_type: Type of model (feedback, predictor, encoder, etc.)
-            name: Human-readable name
-            description: Model description
-            framework: ML framework (pytorch, tensorflow, huggingface)
-            input_shape: Expected input shape
-            output_shape: Expected output shape
-            tags: List of tags for categorization
-        """
-        self.model_id = model_id
-        self.model_type = model_type
-        self.name = name
-        self.description = description
-        self.framework = framework
-        self.input_shape = input_shape or []
-        self.output_shape = output_shape or []
-        self.tags = tags or []
-        self.created_at = datetime.now().isoformat()
-        self.last_used = None
-        self.usage_count = 0
+    # Model details
+    architecture: str  # 'bert', 'gpt2', 'resnet', etc.
+    parameters: int  # Number of parameters
+    input_shape: Optional[Tuple[int, ...]] = None
+    output_shape: Optional[Tuple[int, ...]] = None
+    
+    # Source
+    source: str = 'huggingface'  # 'huggingface', 'local', 'custom'
+    hub_id: Optional[str] = None  # HuggingFace Hub ID
+    local_path: Optional[str] = None
+    
+    # Training
+    trained_on: Optional[str] = None  # Dataset name
+    training_details: Optional[Dict[str, Any]] = None
+    
+    # Performance
+    metrics: Optional[Dict[str, float]] = None
+    
+    # Metadata
+    description: Optional[str] = None
+    tags: Optional[List[str]] = None
+    version: str = '1.0.0'
+    author: Optional[str] = None
+    license: Optional[str] = None
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
-        return {
-            "model_id": self.model_id,
-            "model_type": self.model_type,
-            "name": self.name,
-            "description": self.description,
-            "framework": self.framework,
-            "input_shape": self.input_shape,
-            "output_shape": self.output_shape,
-            "tags": self.tags,
-            "created_at": self.created_at,
-            "last_used": self.last_used,
-            "usage_count": self.usage_count
-        }
+        return asdict(self)
     
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'ModelMetadata':
         """Create from dictionary."""
-        metadata = cls(
-            model_id=data["model_id"],
-            model_type=data["model_type"],
-            name=data["name"],
-            description=data.get("description", ""),
-            framework=data.get("framework", "pytorch"),
-            input_shape=data.get("input_shape"),
-            output_shape=data.get("output_shape"),
-            tags=data.get("tags")
-        )
-        metadata.created_at = data.get("created_at", metadata.created_at)
-        metadata.last_used = data.get("last_used")
-        metadata.usage_count = data.get("usage_count", 0)
-        return metadata
+        return cls(**data)
 
+
+# ============================================================================
+# Model Registry
+# ============================================================================
 
 class ModelRegistry:
     """
-    Central registry for ML models in GMCS.
+    Central registry for ML models.
     
-    Manages model lifecycle, metadata, and provides unified interface
-    for different ML frameworks.
+    Manages catalog of available models, provides search and loading functionality.
     """
     
-    def __init__(self, registry_dir: str = "model_registry"):
+    def __init__(self, registry_path: Optional[str] = None):
         """
         Initialize model registry.
         
         Args:
-            registry_dir: Directory to store registry data
+            registry_path: Path to registry file (default: ./models/registry.json)
         """
-        self.registry_dir = Path(registry_dir)
-        self.registry_dir.mkdir(exist_ok=True)
+        if registry_path is None:
+            registry_path = os.path.join(os.getcwd(), 'models', 'registry.json')
         
-        self.models: Dict[str, Any] = {}
-        self.metadata: Dict[str, ModelMetadata] = {}
+        self.registry_path = Path(registry_path)
+        self.registry_path.parent.mkdir(parents=True, exist_ok=True)
         
+        # Load registry
+        self.models: Dict[str, ModelMetadata] = {}
         self._load_registry()
+        
+        # Initialize with default models
+        if not self.models:
+            self._initialize_default_models()
     
     def _load_registry(self):
-        """Load registry from disk."""
-        metadata_file = self.registry_dir / "registry.json"
-        if metadata_file.exists():
-            with open(metadata_file, 'r') as f:
+        """Load registry from file."""
+        if self.registry_path.exists():
+            with open(self.registry_path, 'r') as f:
                 data = json.load(f)
-                for model_id, meta_dict in data.items():
-                    self.metadata[model_id] = ModelMetadata.from_dict(meta_dict)
+                self.models = {
+                    model_id: ModelMetadata.from_dict(metadata)
+                    for model_id, metadata in data.items()
+                }
     
     def _save_registry(self):
-        """Save registry to disk."""
-        metadata_file = self.registry_dir / "registry.json"
+        """Save registry to file."""
         data = {
-            model_id: meta.to_dict()
-            for model_id, meta in self.metadata.items()
+            model_id: metadata.to_dict()
+            for model_id, metadata in self.models.items()
         }
-        with open(metadata_file, 'w') as f:
+        
+        with open(self.registry_path, 'w') as f:
             json.dump(data, f, indent=2)
     
-    def register_model(
-        self,
-        model: Any,
-        model_type: str,
-        name: str,
-        framework: str = "pytorch",
-        description: str = "",
-        tags: Optional[List[str]] = None,
-        model_id: Optional[str] = None
-    ) -> str:
+    def _initialize_default_models(self):
+        """Initialize with default models."""
+        
+        # BERT models
+        self.register_model(ModelMetadata(
+            model_id='bert-base',
+            name='BERT Base',
+            model_type='transformer',
+            framework='pytorch',
+            task='embedding',
+            architecture='bert',
+            parameters=110_000_000,
+            source='huggingface',
+            hub_id='bert-base-uncased',
+            description='Base BERT model for text embeddings',
+            tags=['nlp', 'embedding', 'bert'],
+            license='apache-2.0'
+        ))
+        
+        self.register_model(ModelMetadata(
+            model_id='bert-large',
+            name='BERT Large',
+            model_type='transformer',
+            framework='pytorch',
+            task='embedding',
+            architecture='bert',
+            parameters=340_000_000,
+            source='huggingface',
+            hub_id='bert-large-uncased',
+            description='Large BERT model for text embeddings',
+            tags=['nlp', 'embedding', 'bert'],
+            license='apache-2.0'
+        ))
+        
+        # GPT models
+        self.register_model(ModelMetadata(
+            model_id='gpt2',
+            name='GPT-2',
+            model_type='transformer',
+            framework='pytorch',
+            task='generation',
+            architecture='gpt2',
+            parameters=117_000_000,
+            source='huggingface',
+            hub_id='gpt2',
+            description='GPT-2 for text generation',
+            tags=['nlp', 'generation', 'gpt'],
+            license='mit'
+        ))
+        
+        self.register_model(ModelMetadata(
+            model_id='gpt2-medium',
+            name='GPT-2 Medium',
+            model_type='transformer',
+            framework='pytorch',
+            task='generation',
+            architecture='gpt2',
+            parameters=345_000_000,
+            source='huggingface',
+            hub_id='gpt2-medium',
+            description='Medium GPT-2 for text generation',
+            tags=['nlp', 'generation', 'gpt'],
+            license='mit'
+        ))
+        
+        # T5 models
+        self.register_model(ModelMetadata(
+            model_id='t5-small',
+            name='T5 Small',
+            model_type='transformer',
+            framework='pytorch',
+            task='seq2seq',
+            architecture='t5',
+            parameters=60_000_000,
+            source='huggingface',
+            hub_id='t5-small',
+            description='Small T5 model for sequence-to-sequence',
+            tags=['nlp', 'seq2seq', 't5'],
+            license='apache-2.0'
+        ))
+        
+        # DistilBERT (fast)
+        self.register_model(ModelMetadata(
+            model_id='distilbert',
+            name='DistilBERT',
+            model_type='transformer',
+            framework='pytorch',
+            task='embedding',
+            architecture='distilbert',
+            parameters=66_000_000,
+            source='huggingface',
+            hub_id='distilbert-base-uncased',
+            description='Distilled BERT for fast embeddings',
+            tags=['nlp', 'embedding', 'fast'],
+            license='apache-2.0'
+        ))
+        
+        # Sentence transformers
+        self.register_model(ModelMetadata(
+            model_id='sentence-transformer',
+            name='Sentence Transformer',
+            model_type='transformer',
+            framework='pytorch',
+            task='embedding',
+            architecture='sentence-bert',
+            parameters=110_000_000,
+            source='huggingface',
+            hub_id='sentence-transformers/all-MiniLM-L6-v2',
+            description='Sentence embeddings optimized for similarity',
+            tags=['nlp', 'embedding', 'similarity'],
+            license='apache-2.0'
+        ))
+        
+        self._save_registry()
+    
+    def register_model(self, metadata: ModelMetadata):
         """
-        Register a new model.
+        Register a model.
         
         Args:
-            model: Model instance (PyTorch, TensorFlow, or HuggingFace)
-            model_type: Type of model
-            name: Model name
-            framework: Framework type
-            description: Description
-            tags: Tags
-            model_id: Optional custom model ID
-            
-        Returns:
-            Model ID
+            metadata: Model metadata
         """
-        # Generate ID if not provided
-        if model_id is None:
-            model_id = f"{framework}_{model_type}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        
-        # Create wrapper based on framework
-        if framework == "pytorch" and PYTORCH_AVAILABLE:
-            wrapper = PyTorchModelWrapper(model)
-        elif framework == "tensorflow" and TENSORFLOW_AVAILABLE:
-            wrapper = TensorFlowModelWrapper(model)
-        elif framework == "huggingface" and HUGGINGFACE_AVAILABLE:
-            wrapper = model  # Already wrapped
-        else:
-            raise ValueError(f"Unsupported framework: {framework}")
-        
-        # Get model info
-        info = wrapper.get_model_info()
-        
-        # Create metadata
-        metadata = ModelMetadata(
-            model_id=model_id,
-            model_type=model_type,
-            name=name,
-            description=description,
-            framework=framework,
-            input_shape=info.get("input_shape"),
-            output_shape=info.get("output_shape"),
-            tags=tags
-        )
-        
-        # Store
-        self.models[model_id] = wrapper
-        self.metadata[model_id] = metadata
-        
-        # Save registry
+        self.models[metadata.model_id] = metadata
         self._save_registry()
-        
-        return model_id
     
-    def get_model(self, model_id: str) -> Any:
+    def unregister_model(self, model_id: str):
         """
-        Get model by ID.
+        Unregister a model.
         
         Args:
-            model_id: Model identifier
+            model_id: Model ID to remove
+        """
+        if model_id in self.models:
+            del self.models[model_id]
+            self._save_registry()
+    
+    def get_model_metadata(self, model_id: str) -> Optional[ModelMetadata]:
+        """
+        Get model metadata.
+        
+        Args:
+            model_id: Model ID
             
         Returns:
-            Model wrapper
+            Model metadata or None
         """
-        if model_id not in self.models:
-            raise KeyError(f"Model {model_id} not found in registry")
-        
-        # Update usage stats
-        metadata = self.metadata[model_id]
-        metadata.last_used = datetime.now().isoformat()
-        metadata.usage_count += 1
-        self._save_registry()
-        
-        return self.models[model_id]
-    
-    def get_metadata(self, model_id: str) -> ModelMetadata:
-        """Get model metadata."""
-        if model_id not in self.metadata:
-            raise KeyError(f"Model {model_id} not found in registry")
-        return self.metadata[model_id]
+        return self.models.get(model_id)
     
     def list_models(
         self,
         model_type: Optional[str] = None,
         framework: Optional[str] = None,
+        task: Optional[str] = None,
         tags: Optional[List[str]] = None
-    ) -> List[Dict[str, Any]]:
+    ) -> List[ModelMetadata]:
         """
-        List registered models with optional filtering.
+        List models with optional filtering.
         
         Args:
             model_type: Filter by model type
             framework: Filter by framework
+            task: Filter by task
             tags: Filter by tags (any match)
             
         Returns:
-            List of model metadata dictionaries
+            List of matching models
         """
-        models = []
+        results = []
         
-        for model_id, metadata in self.metadata.items():
+        for metadata in self.models.values():
             # Apply filters
             if model_type and metadata.model_type != model_type:
                 continue
             if framework and metadata.framework != framework:
                 continue
-            if tags and not any(tag in metadata.tags for tag in tags):
+            if task and metadata.task != task:
+                continue
+            if tags and not any(tag in (metadata.tags or []) for tag in tags):
                 continue
             
-            models.append(metadata.to_dict())
+            results.append(metadata)
         
-        # Sort by last used (most recent first)
-        models.sort(
-            key=lambda x: x.get("last_used") or "",
-            reverse=True
-        )
-        
-        return models
+        return results
     
-    def remove_model(self, model_id: str):
+    def search_models(self, query: str) -> List[ModelMetadata]:
         """
-        Remove model from registry.
+        Search models by name, description, or tags.
         
         Args:
-            model_id: Model identifier
-        """
-        if model_id in self.models:
-            del self.models[model_id]
-        if model_id in self.metadata:
-            del self.metadata[model_id]
-        
-        self._save_registry()
-    
-    def forward(self, model_id: str, input_data: jnp.ndarray) -> jnp.ndarray:
-        """
-        Run forward pass through a model.
-        
-        Args:
-            model_id: Model identifier
-            input_data: Input data
+            query: Search query
             
         Returns:
-            Model output
+            List of matching models
         """
-        model = self.get_model(model_id)
-        return model.forward(input_data)
+        query_lower = query.lower()
+        results = []
+        
+        for metadata in self.models.values():
+            # Search in name
+            if query_lower in metadata.name.lower():
+                results.append(metadata)
+                continue
+            
+            # Search in description
+            if metadata.description and query_lower in metadata.description.lower():
+                results.append(metadata)
+                continue
+            
+            # Search in tags
+            if metadata.tags and any(query_lower in tag.lower() for tag in metadata.tags):
+                results.append(metadata)
+                continue
+        
+        return results
     
-    def batch_forward(
+    def load_model(
         self,
-        model_ids: List[str],
-        input_data: jnp.ndarray
-    ) -> Dict[str, jnp.ndarray]:
+        model_id: str,
+        device: str = 'auto',
+        **kwargs
+    ) -> Any:
         """
-        Run forward pass through multiple models.
+        Load a model.
         
         Args:
-            model_ids: List of model identifiers
-            input_data: Input data
+            model_id: Model ID
+            device: Device to load on
+            **kwargs: Additional arguments for model loading
             
         Returns:
-            Dictionary mapping model IDs to outputs
+            Loaded model
         """
-        outputs = {}
-        for model_id in model_ids:
-            try:
-                outputs[model_id] = self.forward(model_id, input_data)
-            except Exception as e:
-                print(f"Error running model {model_id}: {e}")
-                outputs[model_id] = None
+        metadata = self.get_model_metadata(model_id)
+        if metadata is None:
+            raise ValueError(f"Model {model_id} not found in registry")
         
-        return outputs
+        # Load based on source
+        if metadata.source == 'huggingface':
+            return self._load_from_huggingface(metadata, device, **kwargs)
+        elif metadata.source == 'local':
+            return self._load_from_local(metadata, device, **kwargs)
+        else:
+            raise ValueError(f"Unknown source: {metadata.source}")
+    
+    def _load_from_huggingface(
+        self,
+        metadata: ModelMetadata,
+        device: str = 'auto',
+        **kwargs
+    ) -> Any:
+        """Load model from HuggingFace Hub."""
+        if not TRANSFORMERS_AVAILABLE:
+            raise ImportError("transformers library required. Install with: pip install transformers")
+        
+        if metadata.hub_id is None:
+            raise ValueError(f"Model {metadata.model_id} has no hub_id")
+        
+        # Determine device
+        if device == 'auto':
+            device = 'cuda' if PYTORCH_AVAILABLE and torch.cuda.is_available() else 'cpu'
+        
+        # Load model based on task
+        if metadata.task == 'generation':
+            model = AutoModelForCausalLM.from_pretrained(metadata.hub_id, **kwargs)
+        else:
+            model = AutoModel.from_pretrained(metadata.hub_id, **kwargs)
+        
+        if PYTORCH_AVAILABLE:
+            model = model.to(device)
+        
+        return model
+    
+    def _load_from_local(
+        self,
+        metadata: ModelMetadata,
+        device: str = 'auto',
+        **kwargs
+    ) -> Any:
+        """Load model from local path."""
+        if metadata.local_path is None:
+            raise ValueError(f"Model {metadata.model_id} has no local_path")
+        
+        path = Path(metadata.local_path)
+        if not path.exists():
+            raise FileNotFoundError(f"Model file not found: {path}")
+        
+        # Load based on framework
+        if metadata.framework == 'pytorch' and PYTORCH_AVAILABLE:
+            model = torch.load(path, map_location=device)
+            return model
+        else:
+            raise NotImplementedError(f"Loading {metadata.framework} models not yet implemented")
+    
+    def download_model(self, model_id: str, save_path: Optional[str] = None):
+        """
+        Download model to local storage.
+        
+        Args:
+            model_id: Model ID
+            save_path: Path to save (default: ./models/{model_id})
+        """
+        metadata = self.get_model_metadata(model_id)
+        if metadata is None:
+            raise ValueError(f"Model {model_id} not found")
+        
+        if save_path is None:
+            save_path = os.path.join('models', model_id)
+        
+        # Create directory
+        Path(save_path).mkdir(parents=True, exist_ok=True)
+        
+        # Download from source
+        if metadata.source == 'huggingface':
+            if not TRANSFORMERS_AVAILABLE:
+                raise ImportError("transformers required")
+            
+            # Download model and tokenizer
+            model = AutoModel.from_pretrained(metadata.hub_id)
+            tokenizer = AutoTokenizer.from_pretrained(metadata.hub_id)
+            
+            model.save_pretrained(save_path)
+            tokenizer.save_pretrained(save_path)
+            
+            print(f"Downloaded {model_id} to {save_path}")
+        else:
+            raise ValueError(f"Cannot download from source: {metadata.source}")
     
     def get_statistics(self) -> Dict[str, Any]:
-        """Get registry statistics."""
-        stats = {
-            "total_models": len(self.models),
-            "by_framework": {},
-            "by_type": {},
-            "most_used": None,
-            "recently_added": []
-        }
-        
-        # Count by framework and type
-        for metadata in self.metadata.values():
-            framework = metadata.framework
-            model_type = metadata.model_type
-            
-            stats["by_framework"][framework] = stats["by_framework"].get(framework, 0) + 1
-            stats["by_type"][model_type] = stats["by_type"].get(model_type, 0) + 1
-        
-        # Most used
-        if self.metadata:
-            most_used = max(
-                self.metadata.values(),
-                key=lambda m: m.usage_count
-            )
-            stats["most_used"] = {
-                "model_id": most_used.model_id,
-                "name": most_used.name,
-                "usage_count": most_used.usage_count
-            }
-        
-        # Recently added
-        recent = sorted(
-            self.metadata.values(),
-            key=lambda m: m.created_at,
-            reverse=True
-        )[:5]
-        stats["recently_added"] = [
-            {"model_id": m.model_id, "name": m.name, "created_at": m.created_at}
-            for m in recent
-        ]
-        
-        return stats
-    
-    def export_model_info(self, model_id: str, output_path: str):
         """
-        Export model information to JSON file.
+        Get registry statistics.
         
-        Args:
-            model_id: Model identifier
-            output_path: Output file path
+        Returns:
+            Statistics dict
         """
-        metadata = self.get_metadata(model_id)
-        model = self.get_model(model_id)
+        total_models = len(self.models)
         
-        info = {
-            "metadata": metadata.to_dict(),
-            "model_info": model.get_model_info()
+        # Count by type
+        by_type = {}
+        by_framework = {}
+        by_task = {}
+        
+        for metadata in self.models.values():
+            by_type[metadata.model_type] = by_type.get(metadata.model_type, 0) + 1
+            by_framework[metadata.framework] = by_framework.get(metadata.framework, 0) + 1
+            by_task[metadata.task] = by_task.get(metadata.task, 0) + 1
+        
+        return {
+            'total_models': total_models,
+            'by_type': by_type,
+            'by_framework': by_framework,
+            'by_task': by_task
         }
-        
-        with open(output_path, 'w') as f:
-            json.dump(info, f, indent=2)
 
 
-# Global registry instance
+# ============================================================================
+# Global Registry Instance
+# ============================================================================
+
 _global_registry: Optional[ModelRegistry] = None
 
 
-def get_global_registry() -> ModelRegistry:
-    """Get or create global model registry."""
+def get_registry() -> ModelRegistry:
+    """
+    Get global model registry instance.
+    
+    Returns:
+        ModelRegistry instance
+    """
     global _global_registry
     if _global_registry is None:
         _global_registry = ModelRegistry()
     return _global_registry
 
 
-def register_model(*args, **kwargs) -> str:
-    """Convenience function to register model in global registry."""
-    return get_global_registry().register_model(*args, **kwargs)
+# Alias for backwards compatibility with existing code
+get_global_registry = get_registry
 
 
-def get_model(model_id: str) -> Any:
-    """Convenience function to get model from global registry."""
-    return get_global_registry().get_model(model_id)
+# ============================================================================
+# Convenience Functions
+# ============================================================================
+
+def list_models(**kwargs) -> List[ModelMetadata]:
+    """List models from global registry."""
+    return get_registry().list_models(**kwargs)
 
 
-def list_models(*args, **kwargs) -> List[Dict[str, Any]]:
-    """Convenience function to list models in global registry."""
-    return get_global_registry().list_models(*args, **kwargs)
+def search_models(query: str) -> List[ModelMetadata]:
+    """Search models in global registry."""
+    return get_registry().search_models(query)
 
+
+def load_model(model_id: str, **kwargs) -> Any:
+    """Load model from global registry."""
+    return get_registry().load_model(model_id, **kwargs)
+
+
+def register_model(metadata: ModelMetadata):
+    """Register model in global registry."""
+    get_registry().register_model(metadata)
+
+
+def get_model(model_id: str) -> Optional[ModelMetadata]:
+    """Get model metadata from global registry."""
+    return get_registry().get_model_metadata(model_id)
+
+
+if __name__ == '__main__':
+    # Example usage
+    print("Model Registry Demo\n" + "=" * 50)
+    
+    # Get registry
+    registry = get_registry()
+    
+    # List all models
+    print("\n1. All models:")
+    for model in registry.list_models():
+        print(f"   - {model.model_id}: {model.name} ({model.parameters:,} params)")
+    
+    # Search models
+    print("\n2. Search for 'bert':")
+    results = registry.search_models('bert')
+    for model in results:
+        print(f"   - {model.model_id}: {model.name}")
+    
+    # Filter by type
+    print("\n3. Transformer models:")
+    transformers = registry.list_models(model_type='transformer')
+    print(f"   Found {len(transformers)} transformer models")
+    
+    # Get statistics
+    print("\n4. Registry statistics:")
+    stats = registry.get_statistics()
+    print(f"   Total models: {stats['total_models']}")
+    print(f"   By type: {stats['by_type']}")
+    
+    # Load a model (if transformers available)
+    if TRANSFORMERS_AVAILABLE:
+        print("\n5. Loading DistilBERT...")
+        try:
+            model = registry.load_model('distilbert')
+            print(f"   ✓ Loaded successfully!")
+        except Exception as e:
+            print(f"   ✗ Error: {e}")
+    
+    print("\n✓ Registry demo complete!")

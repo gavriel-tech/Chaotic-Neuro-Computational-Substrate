@@ -30,7 +30,7 @@ export const KeyboardShortcutsPanel: React.FC<KeyboardShortcutsPanelProps> = ({
       acc[category] = filtered;
     }
     return acc;
-  }, {} as Record<string, typeof items>);
+  }, {} as Record<string, any[]>);
 
   return (
     <>
@@ -79,7 +79,7 @@ export const KeyboardShortcutsPanel: React.FC<KeyboardShortcutsPanelProps> = ({
           <div className="px-6 py-4 overflow-y-auto max-h-[calc(80vh-200px)] custom-scrollbar">
             {Object.entries(filteredGroups).length === 0 ? (
               <div className="text-center py-8 text-cyber-cyan-muted">
-                No shortcuts found matching "{searchTerm}"
+                No shortcuts found matching &quot;{searchTerm}&quot;
               </div>
             ) : (
               <div className="space-y-6">

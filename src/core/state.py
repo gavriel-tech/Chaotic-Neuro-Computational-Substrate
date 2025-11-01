@@ -95,9 +95,18 @@ class SystemState(NamedTuple):
     k_strengths: jnp.ndarray  # (N_MAX,)
     c_val: jnp.ndarray  # (1,) scalar in array
     
-    # THRML Integration
+    # THRML Integration (Legacy - kept for backward compatibility)
     thrml_model_data: Optional[Dict[str, Any]]  # Serialized THRML model (for JAX compatibility)
     thrml_enabled: bool  # Always True now (THRML required)
+    
+    # Sampler Backend (Universal)
+    sampler_backend_type: str  # 'thrml', 'photonic', 'neuromorphic', 'quantum'
+    sampler_backend_data: Optional[Dict[str, Any]]  # Serialized backend state
+    sampler_num_chains: int  # Number of parallel chains (-1 for auto-detect)
+    sampler_blocking_strategy: str  # 'checkerboard', 'random', 'stripes', 'supercell', 'graph-coloring', 'auto'
+    sampler_auto_adapt_strategy: bool  # Enable adaptive strategy selection
+    sampler_clamped_nodes: Optional[Dict[str, Any]]  # Serialized clamped node data
+    sampler_performance_history: Optional[Dict[str, Any]]  # Performance metrics history
     
     # Modulation Matrix
     modulation_routes: Optional[Dict[str, Any]]  # Serialized modulation routes
@@ -191,6 +200,15 @@ def initialize_system_state(
     thrml_performance_mode = 'speed'
     thrml_update_freq = 20  # Update every 20 steps
     
+    # Initialize sampler backend (universal)
+    sampler_backend_type = 'thrml'  # Default to THRML
+    sampler_backend_data = None  # Will be set when backend is created
+    sampler_num_chains = -1  # Auto-detect optimal chain count
+    sampler_blocking_strategy = 'checkerboard'  # Default strategy
+    sampler_auto_adapt_strategy = False  # Disabled by default
+    sampler_clamped_nodes = None  # No clamped nodes initially
+    sampler_performance_history = None  # Will accumulate during simulation
+    
     # Initialize modulation matrix
     modulation_routes = None  # Will be set by modulation matrix
     audio_pitch = 440.0  # Default A4
@@ -227,6 +245,13 @@ def initialize_system_state(
         c_val=c_val,
         thrml_model_data=thrml_model_data,
         thrml_enabled=thrml_enabled,
+        sampler_backend_type=sampler_backend_type,
+        sampler_backend_data=sampler_backend_data,
+        sampler_num_chains=sampler_num_chains,
+        sampler_blocking_strategy=sampler_blocking_strategy,
+        sampler_auto_adapt_strategy=sampler_auto_adapt_strategy,
+        sampler_clamped_nodes=sampler_clamped_nodes,
+        sampler_performance_history=sampler_performance_history,
         thrml_temperature=thrml_temperature,
         thrml_gibbs_steps=thrml_gibbs_steps,
         thrml_cd_k=thrml_cd_k,

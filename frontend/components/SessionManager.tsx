@@ -7,6 +7,8 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { notify } from './UI/Notification';
+import { confirm as confirmDialog } from './UI/ConfirmDialog';
 
 interface Session {
   session_id: string;
@@ -53,22 +55,31 @@ export default function SessionManager() {
       await fetch(`http://localhost:8000/session/${sessionId}/load`, {
         method: 'POST'
       });
-      alert('Session loaded successfully!');
+      notify.success('Session loaded successfully!');
     } catch (error) {
       console.error('Failed to load session:', error);
+      notify.error('Failed to load session');
     }
   };
 
   const deleteSession = async (sessionId: string) => {
-    if (!confirm('Delete this session?')) return;
+    const confirmed = await confirmDialog('Delete this session? This action cannot be undone.', {
+      title: 'DELETE SESSION',
+      confirmText: 'DELETE',
+      cancelText: 'CANCEL'
+    });
+    
+    if (!confirmed) return;
     
     try {
       await fetch(`http://localhost:8000/session/${sessionId}`, {
         method: 'DELETE'
       });
       await fetchSessions();
+      notify.success('Session deleted');
     } catch (error) {
       console.error('Failed to delete session:', error);
+      notify.error('Failed to delete session');
     }
   };
 

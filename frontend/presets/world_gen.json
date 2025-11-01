@@ -1,0 +1,31 @@
+{
+  "id": "world_gen",
+  "name": "Procedural World Generation",
+  "version": "1.0",
+  "description": "Generate vast, coherent game worlds using chaos for terrain variation and THRML for biome placement. Creates continents, mountains, rivers, and vegetation with emergent geography.",
+  "category": "Creative",
+  "tags": ["world-generation", "procedural", "game-dev", "terrain"],
+  "author": "GMCS Team",
+  "created": "2025-10-31",
+  
+  "nodes": [
+    {"id": "seed_input", "type": "input", "name": "World Seed", "position": {"x": 100, "y": 300}, "config": {"type": "number", "default": 12345}},
+    {"id": "terrain_gen", "type": "processor", "name": "Terrain Generator", "position": {"x": 300, "y": 300}, "config": {"method": "perlin_fractal", "octaves": 6, "scale": 100, "resolution": [512, 512]}},
+    {"id": "chaos_variation", "type": "oscillator", "name": "Chaos Variation", "position": {"x": 300, "y": 450}, "config": {"count": 64, "coupling_topology": "2d_grid"}},
+    {"id": "thrml_biomes", "type": "thrml", "name": "Biome Placement", "position": {"x": 550, "y": 300}, "config": {"num_nodes": 512, "temperature": 0.8, "custom_energy": "biome_adjacency"}},
+    {"id": "rule_validator", "type": "processor", "name": "Rule Validator", "position": {"x": 800, "y": 300}, "config": {"rules": ["water_flows_down", "desert_not_near_ocean", "mountains_have_snow"], "fix_violations": true}},
+    {"id": "world_output", "type": "output", "name": "World Map Export", "position": {"x": 1050, "y": 300}, "config": {"format": "tilemap_json", "include_heightmap": true}},
+    {"id": "viz_3d", "type": "visualizer", "name": "3D World View", "position": {"x": 550, "y": 550}, "config": {"type": "3D Terrain", "active": true}}
+  ],
+  
+  "connections": [
+    {"from": "seed_input.value", "to": "terrain_gen.seed"},
+    {"from": "terrain_gen.heightmap", "to": "chaos_variation.initial_conditions"},
+    {"from": "chaos_variation.states", "to": "terrain_gen.variation"},
+    {"from": "terrain_gen.heightmap", "to": "thrml_biomes.bias"},
+    {"from": "thrml_biomes.samples", "to": "rule_validator.biomes"},
+    {"from": "rule_validator.validated_world", "to": "world_output.data"},
+    {"from": "rule_validator.validated_world", "to": "viz_3d.data"}
+  ]
+}
+

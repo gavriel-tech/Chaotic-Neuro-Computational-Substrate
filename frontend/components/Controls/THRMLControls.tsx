@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useSimulationStore } from '@/lib/stores/simulation';
 
 interface THRMLControlsProps {
@@ -59,7 +59,7 @@ export const THRMLControls: React.FC<THRMLControlsProps> = ({ className = '' }) 
     }
   };
 
-  const fetchEnergy = async () => {
+  const fetchEnergy = useCallback(async () => {
     try {
       const response = await fetch('http://localhost:8000/thrml/energy');
       const data = await response.json();
@@ -68,13 +68,13 @@ export const THRMLControls: React.FC<THRMLControlsProps> = ({ className = '' }) 
       // Silently fail if no nodes active
       console.debug('Energy fetch failed:', err);
     }
-  };
+  }, [updateThrmlEnergy]);
 
   // Fetch energy periodically
   useEffect(() => {
     const interval = setInterval(fetchEnergy, 2000);
     return () => clearInterval(interval);
-  }, []);
+  }, [fetchEnergy]);
 
   const handleModeChange = async (mode: PerformanceMode) => {
     setLoading(true);

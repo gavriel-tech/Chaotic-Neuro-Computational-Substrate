@@ -1,0 +1,34 @@
+{
+  "id": "neuromapping",
+  "name": "Brain Activity Neuromapping",
+  "version": "1.0",
+  "description": "Map brain activity patterns from EEG/fMRI data using FFT analysis, spatial mapping, and THRML to identify cognitive states and neural signatures.",
+  "category": "Scientific",
+  "tags": ["neuroscience", "eeg", "brain", "mapping", "ml"],
+  "author": "GMCS Team",
+  "created": "2025-10-31",
+  
+  "nodes": [
+    {"id": "eeg_input", "type": "input", "name": "EEG Input", "position": {"x": 100, "y": 300}, "config": {"channels": 64, "sample_rate": 1000, "source": "live"}},
+    {"id": "fft", "type": "analysis", "name": "FFT Analyzer", "position": {"x": 300, "y": 300}, "config": {"size": 1024, "window": "hamming", "bands": ["delta", "theta", "alpha", "beta", "gamma"]}},
+    {"id": "spatial_mapper", "type": "processor", "name": "Spatial Mapper", "position": {"x": 550, "y": 300}, "config": {"method": "interpolation", "resolution": [64, 64], "projection": "stereographic"}},
+    {"id": "thrml_states", "type": "thrml", "name": "Brain State Sampler", "position": {"x": 800, "y": 300}, "config": {"num_nodes": 128, "temperature": 0.9, "custom_energy": "neural_coherence"}},
+    {"id": "state_decoder", "type": "ml", "name": "Cognitive State Decoder", "position": {"x": 1050, "y": 300}, "config": {"type": "CNN Classifier", "output_classes": 5, "class_names": ["resting", "attention", "memory", "motor", "emotion"]}},
+    {"id": "pattern_detector", "type": "analysis", "name": "Pattern Detector", "position": {"x": 550, "y": 450}, "config": {"window_size": 500, "threshold": 0.8}},
+    {"id": "viz_topo", "type": "visualizer", "name": "Topographic Map", "position": {"x": 550, "y": 600}, "config": {"type": "2D Heatmap", "colormap": "jet", "active": true}},
+    {"id": "viz_bands", "type": "visualizer", "name": "Frequency Bands", "position": {"x": 800, "y": 600}, "config": {"type": "Time Series", "signals": ["delta", "theta", "alpha", "beta", "gamma"], "active": true}},
+    {"id": "viz_states", "type": "visualizer", "name": "Cognitive States", "position": {"x": 1050, "y": 600}, "config": {"type": "State Timeline", "active": true}}
+  ],
+  
+  "connections": [
+    {"from": "eeg_input.signal", "to": "fft.signal"},
+    {"from": "fft.bands", "to": "spatial_mapper.input"},
+    {"from": "spatial_mapper.map", "to": "thrml_states.bias"},
+    {"from": "thrml_states.samples", "to": "state_decoder.time_series"},
+    {"from": "spatial_mapper.map", "to": "pattern_detector.signal"},
+    {"from": "spatial_mapper.map", "to": "viz_topo.data"},
+    {"from": "fft.bands", "to": "viz_bands.data"},
+    {"from": "state_decoder.class_probs", "to": "viz_states.data"}
+  ]
+}
+

@@ -1,0 +1,297 @@
+{
+  "id": "nas_discovery",
+  "name": "Neural Architecture Search via Chaos",
+  "version": "1.0",
+  "description": "Discover optimal neural network architectures using chaotic exploration combined with THRML sampling. The system evolves network topologies while ML models predict performance, creating a unique approach to AutoML.",
+  "category": "AI/ML",
+  "tags": ["nas", "automl", "architecture-search", "optimization", "chaos", "ml"],
+  "author": "GMCS Team",
+  "created": "2025-10-31",
+  
+  "documentation": {
+    "overview": "This preset implements Neural Architecture Search (NAS) by using chaotic dynamics to explore the space of possible network architectures. Each oscillator represents an architectural decision (layer type, width, activation). THRML sampling enforces constraints while chaos provides diversity. An ML predictor estimates architecture performance without full training.",
+    "expectedBehavior": "System starts with random architectures, gradually discovering patterns that lead to high performance. You'll see architecture candidates evolving, with performance predictions guiding the search. Successful architectures are saved to the model registry.",
+    "parameters": {
+      "exploration_chaos": "Higher = more architectural diversity, Lower = more exploitation",
+      "constraint_strength": "How strictly THRML enforces architectural constraints",
+      "search_space": "Which architecture types to explore (CNNs, Transformers, etc.)"
+    },
+    "successMetrics": [
+      "Find architecture with >90% predicted accuracy",
+      "Explore >1000 unique architectures in 60 seconds",
+      "Discover novel topologies not in standard search spaces"
+    ]
+  },
+
+  "nodes": [
+    {
+      "id": "param_generator",
+      "type": "generator",
+      "name": "Architecture Parameter Generator",
+      "position": {"x": 100, "y": 200},
+      "config": {
+        "type": "sequence",
+        "length": 50,
+        "pattern_type": "chaotic",
+        "dimensions": ["depth", "width", "layer_type", "activation", "skip_connections"]
+      }
+    },
+    {
+      "id": "chaos_explorer",
+      "type": "oscillator",
+      "name": "Chaotic Architecture Explorer",
+      "position": {"x": 300, "y": 200},
+      "config": {
+        "count": 64,
+        "alpha": 15.6,
+        "beta": 28.0,
+        "m0": -1.143,
+        "m1": -0.714,
+        "initial_state": "random",
+        "enable_coupling": true,
+        "coupling_topology": "small_world"
+      }
+    },
+    {
+      "id": "arch_builder",
+      "type": "processor",
+      "name": "Architecture Builder",
+      "position": {"x": 500, "y": 200},
+      "config": {
+        "search_space": "flexible",
+        "max_depth": 50,
+        "max_width": 1024,
+        "allowed_layers": ["conv", "dense", "attention", "pool", "norm", "skip"],
+        "constraint_budget": {"params": 10000000, "flops": 1000000000}
+      }
+    },
+    {
+      "id": "thrml_constraint",
+      "type": "thrml",
+      "name": "THRML Constraint Sampler",
+      "position": {"x": 500, "y": 350},
+      "config": {
+        "num_nodes": 64,
+        "node_type": "discrete",
+        "temperature": 1.2,
+        "num_samples": 20,
+        "mode": "RESEARCH",
+        "custom_energy": "architecture_constraint"
+      }
+    },
+    {
+      "id": "perf_predictor",
+      "type": "ml",
+      "name": "Performance Predictor",
+      "position": {"x": 700, "y": 200},
+      "config": {
+        "type": "MLP Predictor",
+        "input_dim": 100,
+        "hidden_dims": [256, 128, 64],
+        "output_dim": 3,
+        "outputs": ["accuracy", "latency", "params"]
+      }
+    },
+    {
+      "id": "optimizer",
+      "type": "control",
+      "name": "Search Optimizer",
+      "position": {"x": 900, "y": 200},
+      "config": {
+        "type": "Parameter Optimizer",
+        "learning_rate": 0.05,
+        "optimizer": "adam",
+        "target_metric": "accuracy"
+      }
+    },
+    {
+      "id": "arch_validator",
+      "type": "processor",
+      "name": "Architecture Validator",
+      "position": {"x": 700, "y": 350},
+      "config": {
+        "check_gradient_flow": true,
+        "check_memory_fit": true,
+        "simulation_dataset": "cifar10_subset"
+      }
+    },
+    {
+      "id": "best_arch_storage",
+      "type": "storage",
+      "name": "Best Architecture Registry",
+      "position": {"x": 1100, "y": 200},
+      "config": {
+        "top_k": 10,
+        "save_format": "json",
+        "export_code": true
+      }
+    },
+    {
+      "id": "search_viz",
+      "type": "visualizer",
+      "name": "Architecture Search Visualization",
+      "position": {"x": 500, "y": 500},
+      "config": {
+        "type": "Network Graph",
+        "mode": "architecture",
+        "show_performance": true,
+        "active": true
+      }
+    },
+    {
+      "id": "perf_viz",
+      "type": "visualizer",
+      "name": "Performance Tracking",
+      "position": {"x": 900, "y": 500},
+      "config": {
+        "type": "Time Series",
+        "signals": ["best_accuracy", "mean_accuracy", "architectures_explored"],
+        "history_length": 1000,
+        "active": true
+      }
+    },
+    {
+      "id": "pareto_viz",
+      "type": "visualizer",
+      "name": "Pareto Front",
+      "position": {"x": 1100, "y": 500},
+      "config": {
+        "type": "Scatter Plot",
+        "x_axis": "params",
+        "y_axis": "accuracy",
+        "color_by": "latency",
+        "active": true
+      }
+    }
+  ],
+
+  "connections": [
+    {
+      "from": "param_generator.sequence",
+      "to": "chaos_explorer.initial_conditions",
+      "description": "Seed chaos with architectural parameters"
+    },
+    {
+      "from": "chaos_explorer.states",
+      "to": "arch_builder.parameters",
+      "description": "Chaotic states propose architecture parameters"
+    },
+    {
+      "from": "arch_builder.architecture",
+      "to": "thrml_constraint.structure",
+      "description": "Proposed architectures checked against constraints"
+    },
+    {
+      "from": "thrml_constraint.samples",
+      "to": "arch_builder.valid_mask",
+      "description": "THRML filters invalid architectures"
+    },
+    {
+      "from": "arch_builder.architecture",
+      "to": "perf_predictor.features",
+      "description": "Architecture encoded as features for prediction"
+    },
+    {
+      "from": "perf_predictor.prediction",
+      "to": "arch_validator.predicted_perf",
+      "description": "Predicted performance guides validation"
+    },
+    {
+      "from": "arch_validator.validated",
+      "to": "best_arch_storage.candidates",
+      "description": "Validated architectures stored if top-k"
+    },
+    {
+      "from": "perf_predictor.prediction",
+      "to": "optimizer.current_value",
+      "description": "Performance drives optimization"
+    },
+    {
+      "from": "optimizer.control_signal",
+      "to": "chaos_explorer.coupling_strength",
+      "description": "Optimizer adjusts chaos for better exploration"
+    },
+    {
+      "from": "perf_predictor.loss",
+      "to": "perf_predictor.train_trigger",
+      "description": "Online learning of performance predictor"
+    },
+    {
+      "from": "arch_builder.architecture",
+      "to": "search_viz.data",
+      "description": "Visualize current architecture"
+    },
+    {
+      "from": "perf_predictor.prediction",
+      "to": "perf_viz.best_accuracy",
+      "description": "Track best performance"
+    },
+    {
+      "from": "best_arch_storage.pareto_front",
+      "to": "pareto_viz.data",
+      "description": "Show accuracy-efficiency tradeoffs"
+    }
+  ],
+
+  "initialState": {
+    "description": "Starts with random search, gradually learns which architectural patterns work well.",
+    "autoStart": true,
+    "warmupSteps": 50
+  },
+
+  "controls": {
+    "description": "Control the architecture search process",
+    "parameters": [
+      {
+        "name": "exploration_chaos",
+        "label": "Exploration vs Exploitation",
+        "node": "chaos_explorer",
+        "field": "config.coupling_strength",
+        "type": "slider",
+        "min": 0.0,
+        "max": 1.0,
+        "step": 0.05,
+        "default": 0.3
+      },
+      {
+        "name": "constraint_strength",
+        "label": "Constraint Enforcement",
+        "node": "thrml_constraint",
+        "field": "config.temperature",
+        "type": "slider",
+        "min": 0.1,
+        "max": 3.0,
+        "step": 0.1,
+        "default": 1.2
+      },
+      {
+        "name": "search_space",
+        "label": "Architecture Family",
+        "node": "arch_builder",
+        "field": "config.search_space",
+        "type": "select",
+        "options": ["cnn", "transformer", "mlp", "resnet", "efficientnet", "flexible"],
+        "default": "flexible"
+      },
+      {
+        "name": "max_params",
+        "label": "Maximum Parameters (M)",
+        "node": "arch_builder",
+        "field": "config.constraint_budget.params",
+        "type": "slider",
+        "min": 100000,
+        "max": 100000000,
+        "step": 1000000,
+        "default": 10000000
+      }
+    ]
+  },
+
+  "requirements": {
+    "minGPUMemory": "6GB",
+    "recommendedGPUMemory": "12GB",
+    "jaxSupport": true,
+    "thrmlSupport": true
+  }
+}
+

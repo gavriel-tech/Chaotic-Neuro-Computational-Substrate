@@ -8,8 +8,10 @@ visualization.
 
 import asyncio
 import json
+import os
 from typing import Set, Dict, List, Optional, Any
 from contextlib import asynccontextmanager
+from collections import defaultdict
 
 import jax
 import jax.numpy as jnp
@@ -18,7 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from src.core.state import initialize_system_state, SystemState, N_MAX
+from src.core.state import initialize_system_state, SystemState, N_MAX, MAX_CHAIN_LEN
 from src.core.simulation import (
     simulation_step,
     simulation_step_with_thrml_learning,
@@ -38,6 +40,12 @@ from src.core.thrml_integration import (
     create_thrml_model,
     reconstruct_thrml_wrapper
 )
+from src.core.gmcs_pipeline import ALGO_NOP
+from src.core.performance_config import (
+    get_perf_config,
+    apply_optimal_settings,
+    print_device_info
+)
 from src.config.thrml_config import (
     PerformanceMode,
     get_performance_config,
@@ -51,6 +59,8 @@ from src.api.routes import (
     NodeResponse,
     SystemStatusResponse,
     NodeInfoResponse,
+    NodeListResponse,
+    NodeListItem,
     merge_config_with_defaults,
     pad_chain_to_max_length,
     validate_parameter_ranges,
@@ -70,6 +80,77 @@ sim_state: SystemState = None
 # THRML wrapper (mutable, managed by simulation loop)
 thrml_wrapper: THRMLWrapper = None
 
+# Multi-instance processor manager
+processor_instances: Dict[str, Dict[str, Any]] = {}  # {node_id: {type: 'thrml', instance: wrapper, config: {...}}}
+
+# Mapping of config names to SystemState attributes for node serialization
+NODE_CONFIG_ATTRIBUTES: Dict[str, str] = {
+    "A_max": "gmcs_A_max",
+    "R_comp": "gmcs_R_comp",
+    "T_comp": "gmcs_T_comp",
+    "R_exp": "gmcs_R_exp",
+    "T_exp": "gmcs_T_exp",
+    "Phi": "gmcs_Phi",
+    "omega": "gmcs_omega",
+    "gamma": "gmcs_gamma",
+    "beta": "gmcs_beta",
+    "f0": "gmcs_f0",
+    "Q": "gmcs_Q",
+    "levels": "gmcs_levels",
+    "rate_limit": "gmcs_rate_limit",
+    "n2": "gmcs_n2",
+    "V": "gmcs_V",
+    "V_pi": "gmcs_V_pi",
+    "k_strength": "k_strengths",
+}
+
+
+def _ensure_simulation_initialized() -> None:
+    if sim_state is None:
+        raise HTTPException(status_code=503, detail="Simulation not initialized")
+
+
+def _assert_node_id(node_id: int) -> None:
+    if node_id < 0 or node_id >= N_MAX:
+        raise ValueError(f"Node ID {node_id} must be in range [0, {N_MAX})")
+
+
+def _collect_node_config(state: SystemState, node_id: int) -> Dict[str, float]:
+    config: Dict[str, float] = {}
+    for name, attr in NODE_CONFIG_ATTRIBUTES.items():
+        array = getattr(state, attr, None)
+        if array is None:
+            continue
+        config[name] = float(np.asarray(array[node_id]))
+    return config
+
+
+def _serialize_node(state: SystemState, node_id: int) -> Dict[str, Any]:
+    config = _collect_node_config(state, node_id)
+    position = np.asarray(state.node_positions[node_id]).astype(float).tolist()
+    oscillator_state = np.asarray(state.oscillator_state[node_id]).astype(float).tolist()
+    chain_values = np.asarray(state.gmcs_chain[node_id]).astype(int).tolist()
+    if len(chain_values) < MAX_CHAIN_LEN:
+        chain_values.extend([int(ALGO_NOP)] * (MAX_CHAIN_LEN - len(chain_values)))
+    else:
+        chain_values = chain_values[:MAX_CHAIN_LEN]
+
+    active_flag = bool(np.asarray(state.node_active_mask[node_id]) > 0.5)
+
+    return {
+        "node_id": int(node_id),
+        "active": active_flag,
+        "position": position,
+        "oscillator_state": oscillator_state,
+        "config": config,
+        "chain": chain_values,
+    }
+
+
+def _list_active_node_ids(state: SystemState) -> List[int]:
+    mask = np.asarray(state.node_active_mask)
+    return [int(idx) for idx in np.nonzero(mask > 0.5)[0].tolist()]
+
 # Audio parameters (updated by audio thread)
 audio_params: Dict[str, float] = {
     'rms': 0.0,
@@ -78,10 +159,55 @@ audio_params: Dict[str, float] = {
 
 # WebSocket clients
 websocket_clients: Set[WebSocket] = set()
+websocket_last_seen: Dict[WebSocket, float] = {}
+websocket_health_task: Optional[asyncio.Task] = None
+
+# THRML rebuild coordination
+thrml_rebuild_lock: Optional[asyncio.Lock] = None
+thrml_rebuild_task: Optional[asyncio.Task] = None
+thrml_rebuild_requested: bool = False
+
+# Configuration helpers
+def _get_env_float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+def _get_env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+def _get_env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+# Heartbeat / status configuration (seconds)
+HEARTBEAT_TIMEOUT_SECONDS = _get_env_float("GMCS_WS_HEARTBEAT_TIMEOUT", 30.0)
+HEALTH_CHECK_INTERVAL_SECONDS = _get_env_float("GMCS_WS_HEALTH_CHECK_INTERVAL", 5.0)
+PAUSED_STATUS_INTERVAL_SECONDS = _get_env_float("GMCS_WS_STATUS_INTERVAL", 1.0)
 
 # Simulation control flags
 simulation_running: bool = False  # Don't start automatically - wait for user to click Start
 simulation_task: asyncio.Task = None
+
+# Rate limiting state
+rate_limit_state = defaultdict(lambda: {'count': 0, 'reset_time': datetime.now()})
+RATE_LIMIT_REQUESTS_PER_MINUTE = _get_env_int("GMCS_RATE_LIMIT_RPM", 600)
+RATE_LIMIT_WINDOW_SECONDS = _get_env_float("GMCS_RATE_LIMIT_WINDOW", 60.0)
+RATE_LIMIT_ENABLED = _get_env_bool("GMCS_RATE_LIMIT_ENABLED", False)
 
 
 # ============================================================================
@@ -120,9 +246,15 @@ class THRMLStatusResponse(BaseModel):
 async def lifespan(app: FastAPI):
     """Handle application startup and shutdown."""
     # Startup
-    global sim_state, thrml_wrapper, simulation_task
+    global sim_state, thrml_wrapper, simulation_task, websocket_health_task
+    global thrml_rebuild_lock, thrml_rebuild_task, thrml_rebuild_requested
     
     print("Initializing GMCS simulation with THRML...")
+    
+    # Initialise locks / tasks
+    thrml_rebuild_lock = asyncio.Lock()
+    thrml_rebuild_task = None
+    thrml_rebuild_requested = False
     
     # Initialize JAX state
     key = jax.random.PRNGKey(42)
@@ -145,6 +277,7 @@ async def lifespan(app: FastAPI):
     # Start simulation loop
     print("Starting simulation loop...")
     simulation_task = asyncio.create_task(simulation_loop())
+    websocket_health_task = asyncio.create_task(websocket_health_monitor())
     
     print("GMCS server with THRML ready!")
     
@@ -158,6 +291,18 @@ async def lifespan(app: FastAPI):
         simulation_task.cancel()
         try:
             await simulation_task
+        except asyncio.CancelledError:
+            pass
+    if websocket_health_task:
+        websocket_health_task.cancel()
+        try:
+            await websocket_health_task
+        except asyncio.CancelledError:
+            pass
+    if thrml_rebuild_task:
+        thrml_rebuild_task.cancel()
+        try:
+            await thrml_rebuild_task
         except asyncio.CancelledError:
             pass
     print("Goodbye!")
@@ -194,6 +339,65 @@ except RuntimeError:
 # Simulation Loop
 # ============================================================================
 
+async def websocket_health_monitor():
+    """Close websocket connections that stop sending heartbeats."""
+    try:
+        while True:
+            await asyncio.sleep(HEALTH_CHECK_INTERVAL_SECONDS)
+            now = asyncio.get_running_loop().time()
+            stale_clients: List[WebSocket] = []
+
+            for client in list(websocket_clients):
+                last_seen = websocket_last_seen.get(client)
+                if last_seen is None or now - last_seen > HEARTBEAT_TIMEOUT_SECONDS:
+                    stale_clients.append(client)
+
+            for client in stale_clients:
+                websocket_last_seen.pop(client, None)
+                websocket_clients.discard(client)
+                try:
+                    await client.close(code=status.WS_1008_POLICY_VIOLATION, reason="Heartbeat timeout")
+                except Exception:
+                    # Ignore errors while closing stale sockets
+                    pass
+    except asyncio.CancelledError:
+        # Task cancelled during shutdown
+        pass
+
+
+async def broadcast_status_update():
+    """Send a lightweight status JSON packet to all connected clients."""
+    if not websocket_clients:
+        return
+
+    if sim_state is not None:
+        active_nodes = int(jnp.sum(sim_state.node_active_mask))
+        sim_time = float(sim_state.t[0])
+    else:
+        active_nodes = 0
+        sim_time = 0.0
+
+    payload = {
+        "type": "STATUS",
+        "simulation_running": simulation_running,
+        "active_nodes": active_nodes,
+        "sim_time": sim_time,
+        "timestamp": asyncio.get_running_loop().time(),
+    }
+
+    disconnected: Set[WebSocket] = set()
+    for client in list(websocket_clients):
+        try:
+            await client.send_json(payload)
+        except Exception:
+            disconnected.add(client)
+
+    if disconnected:
+        for client in disconnected:
+            websocket_clients.discard(client)
+            websocket_last_seen.pop(client, None)
+
+
 async def simulation_loop():
     """
     Main simulation loop running at high internal rate with THRML.
@@ -216,6 +420,7 @@ async def simulation_loop():
     
     sim_timer = 0.0
     viz_timer = 0.0
+    status_timer = 0.0
     was_running = False
     last_loop_time = asyncio.get_event_loop().time()
     
@@ -226,9 +431,14 @@ async def simulation_loop():
                     # Reset timers so they don't accumulate during pause
                     sim_timer = 0.0
                     viz_timer = 0.0
+                    status_timer = 0.0
                     was_running = False
                     print("[SIM] Simulation paused")
                 await asyncio.sleep(0.05)
+                status_timer += 0.05
+                if status_timer >= PAUSED_STATUS_INTERVAL_SECONDS:
+                    await broadcast_status_update()
+                    status_timer = 0.0
                 last_loop_time = asyncio.get_event_loop().time()
                 continue
 
@@ -236,6 +446,7 @@ async def simulation_loop():
                 was_running = True
                 sim_timer = 0.0
                 viz_timer = 0.0
+                status_timer = 0.0
                 last_loop_time = asyncio.get_event_loop().time()
                 print("[SIM] Simulation resumed")
 
@@ -271,6 +482,7 @@ async def simulation_loop():
             sim_step_count += 1
             sim_timer += delta_time
             viz_timer += delta_time
+            status_timer += delta_time
 
             # Log THRML activity every 100 steps
             if sim_step_count % 100 == 0:
@@ -309,6 +521,7 @@ async def simulation_loop():
                     compression="auto",
                     max_nodes=512,
                     mask_threshold=0.1,
+                    simulation_running=simulation_running,
                 )
 
                 # Broadcast to all clients
@@ -321,9 +534,15 @@ async def simulation_loop():
 
                 # Clean up disconnected clients
                 websocket_clients.difference_update(disconnected)
+                for client in disconnected:
+                    websocket_last_seen.pop(client, None)
 
                 viz_timer = 0.0
                 viz_step_count += 1
+
+            if status_timer >= PAUSED_STATUS_INTERVAL_SECONDS:
+                await broadcast_status_update()
+                status_timer = 0.0
 
             # 5. Sleep to maintain rate
             elapsed = asyncio.get_event_loop().time() - loop_start
@@ -390,7 +609,7 @@ async def get_status():
 @app.post("/node/add", response_model=NodeResponse)
 async def add_node(request: AddNodeRequest):
     """Add a new node to the simulation."""
-    global sim_state, thrml_wrapper
+    global sim_state, thrml_wrapper, thrml_rebuild_lock
     
     try:
         # Merge config with defaults
@@ -419,29 +638,20 @@ async def add_node(request: AddNodeRequest):
         # Push to device
         sim_state = jax.device_put(sim_state)
         
-        # Recreate THRML wrapper with new node count
-        n_active = int(jnp.sum(sim_state.node_active_mask))
-        if n_active > 0:
-            print(f"[THRML] Creating THRML wrapper with {n_active} active nodes...")
-            print(f"[THRML] THRML enabled: {sim_state.thrml_enabled}, temperature: {sim_state.thrml_temperature}")
-            thrml_wrapper = create_thrml_model(
-                n_nodes=n_active,
-                weights=np.array(sim_state.ebm_weights[:n_active, :n_active]),
-                biases=np.zeros(n_active),
-                beta=1.0 / sim_state.thrml_temperature
-            )
-            print(f"[THRML] Wrapper created successfully with {thrml_wrapper.n_nodes} nodes")
-            print(f"[THRML] Wrapper beta: {thrml_wrapper.beta}, n_edges: {len(thrml_wrapper.edges)}")
-            
-            # Serialize to state
-            thrml_data = thrml_wrapper.serialize()
-            sim_state = sim_state._replace(thrml_model_data=thrml_data)
-            print(f"[THRML] Wrapper serialized to state")
-        
+        # Invalidate and rebuild THRML wrapper asynchronously
+        if thrml_rebuild_lock is None:
+            thrml_rebuild_lock = asyncio.Lock()
+        async with thrml_rebuild_lock:
+            thrml_wrapper = None
+            sim_state = sim_state._replace(thrml_model_data=None)
+        schedule_thrml_rebuild()
+
+        node_payload = _serialize_node(sim_state, node_id)
         return NodeResponse(
             status="success",
             node_id=node_id,
-            message=f"Node {node_id} added at position {request.position}"
+            message=f"Node {node_id} added at position {request.position}",
+            data={"node": node_payload}
         )
         
     except Exception as e:
@@ -459,8 +669,7 @@ async def update_node(request: UpdateNodeRequest):
     try:
         # Validate node IDs
         for node_id in request.node_ids:
-            if node_id >= N_MAX:
-                raise ValueError(f"Invalid node ID: {node_id}")
+            _assert_node_id(node_id)
         
         # Validate and clamp parameters
         config_updates = validate_parameter_ranges(request.config_updates)
@@ -492,10 +701,13 @@ async def update_node(request: UpdateNodeRequest):
         
         # Push to device
         sim_state = jax.device_put(sim_state)
-        
+
+        updated_nodes = [_serialize_node(sim_state, node_id) for node_id in request.node_ids]
+
         return NodeResponse(
             status="success",
-            message=f"Updated {len(request.node_ids)} node(s)"
+            message=f"Updated {len(request.node_ids)} node(s)",
+            data={"nodes": updated_nodes}
         )
         
     except Exception as e:
@@ -508,19 +720,27 @@ async def update_node(request: UpdateNodeRequest):
 @app.delete("/node/{node_id}", response_model=NodeResponse)
 async def remove_node(node_id: int):
     """Remove (deactivate) a node."""
-    global sim_state
+    global sim_state, thrml_wrapper, thrml_rebuild_lock
     
     try:
-        if node_id < 0 or node_id >= N_MAX:
-            raise ValueError(f"Invalid node ID: {node_id}")
+        _assert_node_id(node_id)
         
         sim_state = remove_node_from_state(sim_state, node_id)
         sim_state = jax.device_put(sim_state)
         
+        if thrml_rebuild_lock is None:
+            thrml_rebuild_lock = asyncio.Lock()
+        async with thrml_rebuild_lock:
+            thrml_wrapper = None
+            sim_state = sim_state._replace(thrml_model_data=None)
+        schedule_thrml_rebuild()
+
+        node_payload = _serialize_node(sim_state, node_id)
         return NodeResponse(
             status="success",
             node_id=node_id,
-            message=f"Node {node_id} removed"
+            message=f"Node {node_id} removed",
+            data={"node": node_payload}
         )
         
     except Exception as e:
@@ -533,37 +753,23 @@ async def remove_node(node_id: int):
 @app.get("/node/{node_id}", response_model=NodeInfoResponse)
 async def get_node_info(node_id: int):
     """Get information about a specific node."""
-    if sim_state is None:
-        raise HTTPException(status_code=503, detail="Simulation not initialized")
-    
-    if node_id < 0 or node_id >= N_MAX:
-        raise HTTPException(status_code=400, detail=f"Invalid node ID: {node_id}")
-    
-    import numpy as np
-    
-    active = bool(sim_state.node_active_mask[node_id] > 0.5)
-    position = [float(sim_state.node_positions[node_id, 0]), float(sim_state.node_positions[node_id, 1])]
-    osc_state = [float(sim_state.oscillator_state[node_id, i]) for i in range(3)]
-    chain = [int(x) for x in np.array(sim_state.gmcs_chain[node_id])]
-    
-    config = {
-        'A_max': float(sim_state.gmcs_A_max[node_id]),
-        'R_comp': float(sim_state.gmcs_R_comp[node_id]),
-        'T_comp': float(sim_state.gmcs_T_comp[node_id]),
-        'Phi': float(sim_state.gmcs_Phi[node_id]),
-        'omega': float(sim_state.gmcs_omega[node_id]),
-        'gamma': float(sim_state.gmcs_gamma[node_id]),
-        'beta': float(sim_state.gmcs_beta[node_id]),
-    }
-    
-    return NodeInfoResponse(
-        node_id=node_id,
-        active=active,
-        position=position,
-        oscillator_state=osc_state,
-        config=config,
-        chain=chain
-    )
+    _ensure_simulation_initialized()
+    try:
+        _assert_node_id(node_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    payload = _serialize_node(sim_state, node_id)
+    return NodeInfoResponse(**payload)
+
+
+@app.get("/nodes", response_model=NodeListResponse)
+async def list_nodes():
+    """List all active nodes in the simulation."""
+    _ensure_simulation_initialized()
+    node_ids = _list_active_node_ids(sim_state)
+    nodes = [NodeListItem(**_serialize_node(sim_state, node_id)) for node_id in node_ids]
+    return NodeListResponse(nodes=nodes)
 
 
 # ============================================================================
@@ -580,34 +786,59 @@ async def websocket_endpoint(websocket: WebSocket):
     """
     await websocket.accept()
     websocket_clients.add(websocket)
+    websocket_last_seen[websocket] = asyncio.get_running_loop().time()
+
+    # Send initial status snapshot so clients can sync immediately
+    try:
+        await websocket.send_json(
+            {
+                "type": "STATUS",
+                "simulation_running": simulation_running,
+                "active_nodes": int(jnp.sum(sim_state.node_active_mask)) if sim_state else 0,
+                "sim_time": float(sim_state.t[0]) if sim_state is not None else 0.0,
+                "timestamp": asyncio.get_event_loop().time(),
+            }
+        )
+    except Exception as exc:
+        # If initial status delivery fails, close connection gracefully
+        print(f"[WS] Failed to send initial status: {exc}")
+        await websocket.close(code=status.WS_1011_INTERNAL_ERROR)
+        websocket_clients.discard(websocket)
+        websocket_last_seen.pop(websocket, None)
+        return
     
     try:
         while True:
             # Listen for control messages from client
             message = await websocket.receive()
-            
+            websocket_last_seen[websocket] = asyncio.get_running_loop().time()
             if 'text' in message:
-                # JSON control message
                 try:
                     data = json.loads(message['text'])
-                    
-                    if data.get('type') == 'PING':
-                        # Send pong with stats
+                    msg_type = data.get('type')
+                    if msg_type == 'PING':
                         await websocket.send_json({
                             'type': 'PONG',
                             'active_nodes': int(jnp.sum(sim_state.node_active_mask)),
                             'sim_time': float(sim_state.t[0]),
                             'simulation_running': simulation_running
                         })
-                    
+                    elif msg_type == 'HEARTBEAT':
+                        websocket_last_seen[websocket] = asyncio.get_running_loop().time()
+                        await websocket.send_json({
+                            'type': 'HEARTBEAT_ACK',
+                            'timestamp': asyncio.get_running_loop().time(),
+                            'simulation_running': simulation_running
+                        })
                 except json.JSONDecodeError:
                     pass
-    
     except WebSocketDisconnect:
-        websocket_clients.remove(websocket)
+        websocket_clients.discard(websocket)
     except Exception as e:
         print(f"WebSocket error: {e}")
         websocket_clients.discard(websocket)
+    finally:
+        websocket_last_seen.pop(websocket, None)
 
 
 # ============================================================================
@@ -616,7 +847,6 @@ async def websocket_endpoint(websocket: WebSocket):
 
 import time
 import logging
-from collections import defaultdict
 from datetime import datetime, timedelta
 
 # Configure structured logging
@@ -625,12 +855,6 @@ logging.basicConfig(
     format='%(asctime)s [%(levelname)s] %(name)s: %(message)s'
 )
 logger = logging.getLogger(__name__)
-
-# Rate limiting state
-rate_limit_state = defaultdict(lambda: {'count': 0, 'reset_time': datetime.now()})
-RATE_LIMIT_REQUESTS_PER_MINUTE = 60
-RATE_LIMIT_ENABLED = True  # Set via env var in production
-
 
 @app.middleware("http")
 async def rate_limiting_middleware(request, call_next):
@@ -649,21 +873,24 @@ async def rate_limiting_middleware(request, call_next):
     now = datetime.now()
     state = rate_limit_state[client_ip]
     
-    if now > state['reset_time']:
+    if now >= state['reset_time']:
         # Reset window
         state['count'] = 0
-        state['reset_time'] = now + timedelta(minutes=1)
+        state['reset_time'] = now + timedelta(seconds=RATE_LIMIT_WINDOW_SECONDS)
     
     state['count'] += 1
     
     if state['count'] > RATE_LIMIT_REQUESTS_PER_MINUTE:
-        logger.warning(f"Rate limit exceeded for {client_ip}")
+        retry_after = max(1, int((state['reset_time'] - now).total_seconds()))
+        headers = _build_cors_headers(request)
+        headers["Retry-After"] = str(retry_after)
         return JSONResponse(
             status_code=429,
             content={
                 "error": "Rate limit exceeded",
-                "retry_after": int((state['reset_time'] - now).total_seconds())
-            }
+                "retry_after": retry_after
+            },
+            headers=headers
         )
     
     response = await call_next(request)
@@ -699,7 +926,6 @@ async def health_check():
     Returns system status, uptime, and resource availability.
     """
     import psutil
-    import os
     
     global sim_state, websocket_clients, simulation_running
     
@@ -783,8 +1009,8 @@ async def metrics_endpoint():
 
 @app.post("/simulation/start")
 async def start_simulation():
-    """Start the simulation loop."""
-    global simulation_running
+    """Start the simulation loop and activate all processor instances."""
+    global simulation_running, processor_instances
     
     if simulation_running:
         return {
@@ -794,17 +1020,29 @@ async def start_simulation():
         }
     
     simulation_running = True
+    
+    # Activate all processor instances
+    activated = 0
+    for node_id, proc in processor_instances.items():
+        proc["active"] = True
+        activated += 1
+        print(f"[PROCESSOR] Activated {proc['type']} instance for node {node_id}")
+    
+    if activated > 0:
+        print(f"[SIMULATION] Started with {activated} active processors")
+    
     return {
         "status": "started",
-        "message": "Simulation started",
-        "running": simulation_running
+        "message": f"Simulation started with {activated} active processors",
+        "running": simulation_running,
+        "active_processors": activated
     }
 
 
 @app.post("/simulation/stop")
 async def stop_simulation():
-    """Stop the simulation loop."""
-    global simulation_running
+    """Stop the simulation loop and deactivate all processor instances."""
+    global simulation_running, processor_instances
     
     if not simulation_running:
         return {
@@ -814,10 +1052,22 @@ async def stop_simulation():
         }
     
     simulation_running = False
+    
+    # Deactivate all processor instances (but keep them in memory for resume)
+    deactivated = 0
+    for node_id, proc in processor_instances.items():
+        proc["active"] = False
+        deactivated += 1
+        print(f"[PROCESSOR] Deactivated {proc['type']} instance for node {node_id}")
+    
+    if deactivated > 0:
+        print(f"[SIMULATION] Stopped, {deactivated} processors deactivated")
+    
     return {
         "status": "stopped",
-        "message": "Simulation stopped",
-        "running": simulation_running
+        "message": f"Simulation stopped, {deactivated} processors deactivated",
+        "running": simulation_running,
+        "deactivated_processors": deactivated
     }
 
 
@@ -859,6 +1109,133 @@ async def get_simulation_status():
 # ============================================================================
 # THRML Control Endpoints
 # ============================================================================
+
+@app.post("/processor/create")
+async def create_processor_instance(
+    node_id: str,
+    processor_type: str = "thrml",
+    nodes: int = 64,
+    temperature: float = 1.0,
+    gibbs_steps: int = 5,
+    config: Dict[str, Any] = None
+):
+    """
+    Create a processor instance for a specific node.
+    
+    Supports multiple processor types:
+    - thrml: THRML Energy-Based Model sampler
+    - photonic: Photonic Ising Machine (future)
+    - neuromorphic: Neuromorphic hardware (future)
+    
+    Each node gets its own isolated processor instance that can be
+    independently controlled and queried.
+    """
+    global processor_instances, sim_state
+    
+    try:
+        print(f"[PROCESSOR] Creating {processor_type} instance for node {node_id}: nodes={nodes}, temp={temperature}")
+        
+        if processor_type == "thrml":
+            # Create THRML wrapper with specified parameters
+            instance = create_thrml_model(
+                n_nodes=nodes,
+                weights=np.random.randn(nodes, nodes) * 0.1,  # Small random weights
+                biases=np.zeros(nodes),
+                beta=1.0 / temperature
+            )
+            
+            processor_instances[node_id] = {
+                "type": "thrml",
+                "instance": instance,
+                "config": {
+                    "nodes": nodes,
+                    "temperature": temperature,
+                    "gibbs_steps": gibbs_steps,
+                    **(config or {})
+                },
+                "active": False  # Will be activated when simulation starts
+            }
+            
+            print(f"[PROCESSOR] THRML instance created for node {node_id}: {instance.n_nodes} nodes")
+            
+            return {
+                "status": "success",
+                "node_id": node_id,
+                "processor_type": processor_type,
+                "n_nodes": instance.n_nodes,
+                "temperature": temperature,
+                "gibbs_steps": gibbs_steps
+            }
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported processor type: {processor_type}. Supported: thrml, photonic (future), neuromorphic (future)"
+            )
+        
+    except Exception as e:
+        print(f"[PROCESSOR ERROR] Failed to create instance: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to create processor: {str(e)}")
+
+
+@app.delete("/processor/{node_id}")
+async def delete_processor_instance(node_id: str):
+    """Delete a processor instance when a node is removed."""
+    global processor_instances
+    
+    if node_id in processor_instances:
+        proc = processor_instances[node_id]
+        print(f"[PROCESSOR] Deleting {proc['type']} instance for node {node_id}")
+        del processor_instances[node_id]
+        return {"status": "success", "message": f"Processor for node {node_id} deleted"}
+    else:
+        return {"status": "not_found", "message": f"No processor found for node {node_id}"}
+
+
+@app.get("/processor/{node_id}/status")
+async def get_processor_status(node_id: str):
+    """Get status of a specific processor instance."""
+    global processor_instances
+    
+    if node_id not in processor_instances:
+        raise HTTPException(status_code=404, detail=f"No processor found for node {node_id}")
+    
+    proc = processor_instances[node_id]
+    
+    status = {
+        "node_id": node_id,
+        "processor_type": proc["type"],
+        "active": proc["active"],
+        "config": proc["config"]
+    }
+    
+    if proc["type"] == "thrml":
+        instance = proc["instance"]
+        status["n_nodes"] = instance.n_nodes
+        status["n_edges"] = len(instance.edges)
+    
+    return status
+
+
+@app.get("/processor/list")
+async def list_processors():
+    """List all active processor instances."""
+    global processor_instances
+    
+    return {
+        "processors": [
+            {
+                "node_id": node_id,
+                "type": proc["type"],
+                "active": proc["active"],
+                "config": proc["config"]
+            }
+            for node_id, proc in processor_instances.items()
+        ],
+        "total": len(processor_instances)
+    }
+
 
 @app.get("/thrml/status", response_model=THRMLStatusResponse)
 async def get_thrml_status():
@@ -952,6 +1329,9 @@ async def list_thrml_performance_modes():
 async def get_thrml_energy():
     """Get current THRML model energy."""
     global sim_state, thrml_wrapper
+    
+    if sim_state is None:
+        return THRMLEnergyResponse(energy=0.0, timestamp=0.0)
     
     if thrml_wrapper is None:
         # Try to reconstruct from state
@@ -1303,6 +1683,8 @@ async def configure_heterogeneous_thrml(request: THRMLHeterogeneousRequest):
     """Configure heterogeneous THRML model with mixed node types."""
     global thrml_wrapper, sim_state
     
+    _ensure_simulation_initialized()
+    
     from src.core.thrml_integration import HeterogeneousTHRMLWrapper
     import numpy as np
     
@@ -1335,6 +1717,8 @@ async def configure_heterogeneous_thrml(request: THRMLHeterogeneousRequest):
 async def clamp_thrml_nodes(request: THRMLClampNodesRequest):
     """Clamp specific nodes for conditional sampling."""
     global thrml_wrapper
+    
+    _ensure_simulation_initialized()
     
     if thrml_wrapper is None:
         raise HTTPException(status_code=400, detail="THRML not initialized")
@@ -1726,11 +2110,14 @@ async def get_fft_data(node_id: int, fft_size: int = 1024):
 
 
 @app.get("/visualizer/thrml/pbits")
-async def get_thrml_pbit_states(max_history: int = 128):
+async def get_thrml_pbit_states(max_history: int = 128, node_id: str = None):
     """
     Get current THRML p-bit states and optional history for visualizers.
+    
+    If node_id is provided, returns data for that specific processor instance.
+    Otherwise, returns data from the global wrapper (legacy mode).
     """
-    global thrml_wrapper, sim_state
+    global thrml_wrapper, sim_state, processor_instances
 
     if sim_state is None:
         return {
@@ -1741,34 +2128,55 @@ async def get_thrml_pbit_states(max_history: int = 128):
             "timestamp": 0.0
         }
 
-    if thrml_wrapper is None:
-        # Attempt to reconstruct from serialized state
-        if sim_state.thrml_model_data is not None:
-            print("[THRML] P-bit endpoint: Reconstructing wrapper from state...")
-            thrml_wrapper = reconstruct_thrml_wrapper(sim_state.thrml_model_data)
-        else:
-            print("[THRML] P-bit endpoint: No wrapper available")
-            return {
-                "current": [],
-                "history": [],
-                "grid_size": 0,
-                "history_length": 0,
-                "timestamp": float(sim_state.t[0])
-            }
+    # Try to get from processor instance first
+    active_wrapper = None
+    if node_id and node_id in processor_instances:
+        proc = processor_instances[node_id]
+        if proc["type"] == "thrml" and proc["active"]:
+            active_wrapper = proc["instance"]
+            print(f"[THRML] Using processor instance for node {node_id}")
+    
+    # Fall back to global wrapper if no processor instance
+    if active_wrapper is None:
+        if thrml_wrapper is None:
+            # Attempt to reconstruct from serialized state
+            if sim_state.thrml_model_data is not None:
+                print("[THRML] P-bit endpoint: Reconstructing wrapper from state...")
+                thrml_wrapper = reconstruct_thrml_wrapper(sim_state.thrml_model_data)
+            else:
+                print("[THRML] P-bit endpoint: No wrapper available")
+                return {
+                    "current": [],
+                    "history": [],
+                    "grid_size": 0,
+                    "history_length": 0,
+                    "timestamp": float(sim_state.t[0])
+                }
+        active_wrapper = thrml_wrapper
 
     sample = get_last_thrml_sample()
 
     # If no sample recorded yet, generate one so the visualizer has data
-    if sample is None and thrml_wrapper is not None:
+    if sample is None and active_wrapper is not None:
         try:
             key = jax.random.PRNGKey(np.random.randint(0, 2**31 - 1))
-            sample = thrml_wrapper.sample_gibbs(
-                n_steps=max(5, sim_state.thrml_gibbs_steps),
-                temperature=sim_state.thrml_temperature,
+            
+            # Get config from processor instance if available
+            if node_id and node_id in processor_instances:
+                proc_config = processor_instances[node_id]["config"]
+                temperature = proc_config.get("temperature", 1.0)
+                gibbs_steps = proc_config.get("gibbs_steps", 5)
+            else:
+                temperature = sim_state.thrml_temperature
+                gibbs_steps = sim_state.thrml_gibbs_steps
+            
+            sample = active_wrapper.sample_gibbs(
+                n_steps=max(5, gibbs_steps),
+                temperature=temperature,
                 key=key
             )
             update_thrml_sample(sample)
-            print("[THRML] P-bit endpoint: Generated fresh sample for visualizer")
+            print(f"[THRML] P-bit endpoint: Generated fresh sample for visualizer (node_id={node_id})")
         except Exception as exc:
             print(f"[THRML] P-bit endpoint error while sampling: {exc}")
             sample = None
@@ -1988,6 +2396,565 @@ async def get_node_positions():
 
 
 # ============================================================================
+# Sampler Backend API Endpoints (New Generic Interface)
+# ============================================================================
+
+@app.get("/sampler/benchmarks")
+async def get_sampler_benchmarks():
+    """
+    Get current benchmark diagnostics from the active sampler backend.
+    
+    Returns samples/sec, ESS/sec, autocorrelation, and other performance metrics.
+    """
+    global thrml_wrapper
+    
+    if thrml_wrapper is None:
+        return {
+            "error": "No sampler backend active",
+            "samples_per_sec": 0.0,
+            "ess_per_sec": 0.0,
+            "lag1_autocorr": 0.0,
+            "tau_int": 0.0
+        }
+    
+    # Get diagnostics from THRML wrapper
+    diagnostics = thrml_wrapper.get_benchmark_diagnostics()
+    
+    return {
+        "samples_per_sec": diagnostics.get("samples_per_sec", 0.0),
+        "ess_per_sec": diagnostics.get("ess_per_sec", 0.0),
+        "lag1_autocorr": diagnostics.get("lag1_autocorr", 0.0),
+        "tau_int": diagnostics.get("tau_int", 0.0),
+        "total_samples": diagnostics.get("total_samples", 0),
+        "mean_magnetization": diagnostics.get("mean_magnetization", 0.0),
+        "timestamp": float(sim_state.t[0]) if sim_state else 0.0
+    }
+
+
+@app.get("/sampler/benchmarks/history")
+async def get_sampler_benchmark_history(max_samples: int = 100):
+    """
+    Get benchmark history over time.
+    
+    Args:
+        max_samples: Maximum number of historical samples to return
+        
+    Returns:
+        List of benchmark samples with timestamps
+    """
+    global thrml_wrapper
+    
+    if thrml_wrapper is None:
+        return {
+            "history": [],
+            "count": 0
+        }
+    
+    history = thrml_wrapper.get_benchmark_history(max_samples=max_samples)
+    
+    return {
+        "history": history,
+        "count": len(history)
+    }
+
+
+@app.get("/sampler/benchmarks/export")
+async def export_sampler_benchmarks(format: str = "json"):
+    """
+    Export benchmark data in JSON or CSV format.
+    
+    Args:
+        format: 'json' or 'csv'
+        
+    Returns:
+        Benchmark data in requested format
+    """
+    global thrml_wrapper
+    
+    if thrml_wrapper is None:
+        return {"error": "No sampler backend active"}
+    
+    if format == "json":
+        return thrml_wrapper.get_benchmark_json()
+    elif format == "csv":
+        # For CSV, we'll return a text response
+        import io
+        csv_buffer = io.StringIO()
+        thrml_wrapper.export_benchmark_csv(csv_buffer)
+        csv_data = csv_buffer.getvalue()
+        
+        from fastapi.responses import Response
+        return Response(
+            content=csv_data,
+            media_type="text/csv",
+            headers={"Content-Disposition": "attachment; filename=benchmark_data.csv"}
+        )
+    else:
+        return {"error": f"Unknown format: {format}. Use 'json' or 'csv'."}
+
+
+# ============================================================================
+# Multi-Chain Control Endpoints
+# ============================================================================
+
+@app.get("/sampler/chains")
+async def get_chain_config():
+    """
+    Get current multi-chain configuration.
+    
+    Returns:
+        Dict with current chain count, auto-detected optimal, and hardware info
+    """
+    global thrml_wrapper, sim_state
+    
+    if thrml_wrapper is None:
+        return {
+            "current_chains": 1,
+            "auto_detected_optimal": 1,
+            "has_gpu": False,
+            "enabled": False
+        }
+    
+    chain_diag = thrml_wrapper.get_chain_diagnostics()
+    
+    return {
+        "current_chains": chain_diag.get("current_n_chains", 1),
+        "auto_detected_optimal": chain_diag.get("auto_detected_optimal", 1),
+        "has_gpu": chain_diag.get("has_gpu", False),
+        "enabled": sim_state.sampler_num_chains != 1 if sim_state else False
+    }
+
+
+@app.post("/sampler/chains")
+async def set_chain_config(num_chains: int = -1):
+    """
+    Set number of parallel sampling chains.
+    
+    Args:
+        num_chains: Number of chains (1 for single, -1 for auto-detect, >1 for specific count)
+        
+    Returns:
+        Updated configuration
+    """
+    global sim_state
+    
+    if sim_state is None:
+        return {"error": "System not initialized"}
+    
+    # Update system state
+    sim_state = sim_state._replace(sampler_num_chains=num_chains)
+    
+    return {
+        "num_chains": num_chains,
+        "message": f"Set to {'auto-detect' if num_chains == -1 else f'{num_chains} chains'}"
+    }
+
+
+# ============================================================================
+# Conditional Sampling (Clamped Nodes) Endpoints
+# ============================================================================
+
+@app.post("/sampler/clamp")
+async def clamp_nodes(node_ids: List[int], values: List[float]):
+    """
+    Clamp (fix) specific nodes for conditional sampling.
+    
+    Args:
+        node_ids: List of node indices to clamp
+        values: List of values to clamp to
+        
+    Returns:
+        Status of clamping operation
+    """
+    global thrml_wrapper, sim_state
+    
+    if thrml_wrapper is None:
+        return {"error": "No sampler backend active"}
+    
+    if len(node_ids) != len(values):
+        return {"error": "node_ids and values must have same length"}
+    
+    # Clamp nodes in THRML wrapper
+    thrml_wrapper.set_clamped_nodes(
+        node_ids=node_ids,
+        values=values,
+        node_positions=None  # Could extract from sim_state if needed
+    )
+    
+    # Update system state
+    if sim_state:
+        sim_state = sim_state._replace(
+            sampler_clamped_nodes={'node_ids': node_ids, 'values': values}
+        )
+    
+    return {
+        "clamped_count": len(node_ids),
+        "node_ids": node_ids,
+        "values": values,
+        "message": f"Clamped {len(node_ids)} nodes"
+    }
+
+
+@app.get("/sampler/clamp")
+async def get_clamped_nodes():
+    """
+    Get currently clamped nodes.
+    
+    Returns:
+        Dict with clamped node IDs and values
+    """
+    global thrml_wrapper
+    
+    if thrml_wrapper is None:
+        return {
+            "clamped_count": 0,
+            "node_ids": [],
+            "values": []
+        }
+    
+    node_ids, values = thrml_wrapper.get_clamped_nodes()
+    
+    return {
+        "clamped_count": len(node_ids),
+        "node_ids": node_ids,
+        "values": values
+    }
+
+
+@app.delete("/sampler/clamp")
+async def clear_clamped_nodes():
+    """
+    Clear all clamped nodes, returning to unconstrained sampling.
+    
+    Returns:
+        Status message
+    """
+    global thrml_wrapper, sim_state
+    
+    if thrml_wrapper is None:
+        return {"error": "No sampler backend active"}
+    
+    thrml_wrapper.clear_clamped_nodes(node_positions=None)
+    
+    # Update system state
+    if sim_state:
+        sim_state = sim_state._replace(sampler_clamped_nodes=None)
+    
+    return {
+        "message": "Cleared all clamped nodes",
+        "clamped_count": 0
+    }
+
+
+# ============================================================================
+# THRML Blocking Strategy Endpoints
+# ============================================================================
+
+@app.get("/thrml/blocking-strategy")
+async def get_blocking_strategy():
+    """
+    Get current blocking strategy.
+    
+    Returns:
+        Dict with current strategy name and available strategies
+    """
+    global thrml_wrapper
+    
+    if thrml_wrapper is None:
+        return {
+            "current": "checkerboard",
+            "available": ["checkerboard", "random", "stripes", "supercell", "graph-coloring"]
+        }
+    
+    return {
+        "current": thrml_wrapper.get_blocking_strategy(),
+        "available": thrml_wrapper.get_supported_strategies()
+    }
+
+
+@app.post("/thrml/blocking-strategy")
+async def set_blocking_strategy(strategy_name: str):
+    """
+    Set blocking strategy for parallel sampling.
+    
+    Args:
+        strategy_name: Name of strategy ('checkerboard', 'random', 'stripes', 'supercell', 'graph-coloring')
+        
+    Returns:
+        Status of operation
+    """
+    global thrml_wrapper, sim_state
+    
+    if thrml_wrapper is None:
+        return {"error": "No sampler backend active"}
+    
+    available = thrml_wrapper.get_supported_strategies()
+    if strategy_name not in available:
+        return {
+            "error": f"Unknown strategy: {strategy_name}",
+            "available": available
+        }
+    
+    # Set strategy
+    thrml_wrapper.set_blocking_strategy(
+        strategy_name=strategy_name,
+        node_positions=None,  # Could extract from sim_state if needed
+        connectivity=None
+    )
+    
+    # Update system state
+    if sim_state:
+        sim_state = sim_state._replace(sampler_blocking_strategy=strategy_name)
+    
+    # Validate
+    validation = thrml_wrapper.validate_current_blocks()
+    
+    return {
+        "strategy": strategy_name,
+        "valid": validation.get("valid", False),
+        "balance_score": validation.get("balance_score", 0.0),
+        "message": f"Set blocking strategy to {strategy_name}"
+    }
+
+
+@app.post("/thrml/sample")
+async def trigger_manual_sample(n_steps: int = 10, temperature: float = 1.0):
+    """
+    Manually trigger a THRML sample.
+    
+    Args:
+        n_steps: Number of Gibbs steps
+        temperature: Sampling temperature
+        
+    Returns:
+        Sampled binary states and diagnostics
+    """
+    global thrml_wrapper, sim_state
+    
+    if thrml_wrapper is None:
+        raise HTTPException(status_code=404, detail="THRML wrapper not initialized")
+    
+    try:
+        # Generate random key
+        import jax.random
+        key = jax.random.PRNGKey(int(np.random.randint(0, 2**31)))
+        
+        # Sample
+        samples = thrml_wrapper.sample_gibbs(
+            n_steps=n_steps,
+            temperature=temperature,
+            key=key,
+            return_all_samples=False
+        )
+        
+        # Compute energy
+        energy = thrml_wrapper.compute_energy(samples)
+        
+        return {
+            "status": "success",
+            "samples": samples.tolist(),
+            "energy": float(energy),
+            "n_steps": n_steps,
+            "temperature": temperature,
+            "n_nodes": thrml_wrapper.n_nodes
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Sampling failed: {str(e)}")
+
+
+@app.get("/thrml/diagnostics")
+async def get_thrml_diagnostics():
+    """
+    Get comprehensive THRML diagnostics including benchmark metrics.
+    
+    Returns:
+        Dictionary with samples/sec, ESS/sec, autocorr, tau_int, energy, etc.
+    """
+    global thrml_wrapper, sim_state
+    
+    if thrml_wrapper is None:
+        return {
+            "available": False,
+            "error": "THRML wrapper not initialized"
+        }
+    
+    try:
+        # Get benchmark diagnostics
+        benchmark_diag = thrml_wrapper.get_benchmark_diagnostics()
+        
+        # Get health status
+        health = thrml_wrapper.get_health_status()
+        
+        # Get chain diagnostics
+        chain_diag = thrml_wrapper.get_chain_diagnostics()
+        
+        # Get device info
+        devices = jax.devices()
+        device_info = {
+            'device_count': len(devices),
+            'device_type': "gpu" if any("gpu" in str(d).lower() for d in devices) else "cpu",
+            'devices': [str(d) for d in devices]
+        }
+        
+        # Combine all diagnostics
+        return {
+            "available": True,
+            "benchmark": benchmark_diag,
+            "health": health,
+            "chains": chain_diag,
+            "device": device_info,
+            "blocking": {
+                "current_strategy": thrml_wrapper.get_blocking_strategy(),
+                "supported_strategies": thrml_wrapper.get_supported_strategies()
+            },
+            "clamped_nodes": {
+                "count": len(thrml_wrapper._clamped_node_ids),
+                "node_ids": thrml_wrapper._clamped_node_ids
+            }
+        }
+        
+    except Exception as e:
+        return {
+            "available": False,
+            "error": f"Failed to get diagnostics: {str(e)}"
+        }
+
+
+@app.get("/performance/info")
+async def get_performance_info():
+    """
+    Get current performance configuration and device info.
+    
+    Returns:
+        Performance configuration and device information
+    """
+    perf_config = get_perf_config()
+    device_info = perf_config.get_device_info()
+    
+    return {
+        "device_info": device_info,
+        "available_modes": ["gpu_high_performance", "gpu_low_memory", "cpu_optimized", "debug"],
+        "current_mode": "unknown"  # We don't track this globally yet
+    }
+
+
+@app.post("/performance/mode")
+async def set_performance_mode(mode: str):
+    """
+    Set performance optimization mode.
+    
+    Args:
+        mode: Performance mode ('gpu_high_performance', 'gpu_low_memory', 'cpu_optimized', 'debug')
+        
+    Returns:
+        Confirmation message
+    """
+    try:
+        apply_optimal_settings(mode)
+        return {
+            "status": "success",
+            "mode": mode,
+            "message": f"Performance mode set to '{mode}'"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to set mode: {str(e)}")
+
+
+@app.get("/thrml/health")
+async def get_thrml_health():
+    """
+    Get THRML health status for monitoring.
+    
+    Returns:
+        Health status dictionary
+    """
+    global thrml_wrapper
+    
+    if thrml_wrapper is None:
+        return {
+            "healthy": False,
+            "reason": "THRML wrapper not initialized"
+        }
+    
+    try:
+        health = thrml_wrapper.get_health_status()
+        return health
+        
+    except Exception as e:
+        return {
+            "healthy": False,
+            "reason": f"Health check failed: {str(e)}"
+        }
+
+
+# ============================================================================
+# Backend Selection Endpoints
+# ============================================================================
+
+@app.get("/sampler/backends")
+async def get_available_backends():
+    """
+    Get list of available sampler backends with their capabilities.
+    
+    Returns:
+        List of backend info dicts
+    """
+    from src.core.sampler_backend import SamplerBackendRegistry
+    
+    backends = SamplerBackendRegistry.get_available_backends()
+    
+    return {
+        "backends": backends,
+        "count": len(backends)
+    }
+
+
+@app.post("/sampler/backend")
+async def set_sampler_backend(backend_type: str):
+    """
+    Switch to a different sampler backend.
+    
+    Args:
+        backend_type: Type of backend ('thrml', 'photonic', 'neuromorphic', 'quantum')
+        
+    Returns:
+        Status of backend switch
+    """
+    global sim_state, thrml_wrapper
+    
+    if sim_state is None:
+        return {"error": "System not initialized"}
+    
+    from src.core.sampler_backend import SamplerBackendRegistry
+    
+    backend_class = SamplerBackendRegistry.get_backend(backend_type)
+    if backend_class is None:
+        available = SamplerBackendRegistry.list_backends()
+        return {
+            "error": f"Unknown backend: {backend_type}",
+            "available": available
+        }
+    
+    # For now, we only support THRML backend fully
+    # Other backends would require more integration work
+    if backend_type != "thrml":
+        return {
+            "error": f"Backend '{backend_type}' not yet fully integrated",
+            "message": "Only 'thrml' backend is currently supported",
+            "available": ["thrml"]
+        }
+    
+    # Update system state
+    sim_state = sim_state._replace(sampler_backend_type=backend_type)
+    
+    return {
+        "backend": backend_type,
+        "message": f"Switched to {backend_type} backend"
+    }
+
+
+# ============================================================================
 # Include routers from separate files
 # ============================================================================
 
@@ -1995,11 +2962,22 @@ from src.api.node_configs import router as configs_router
 from src.api.external_models import router as external_router
 from src.api.ml_endpoints import router as ml_router
 from src.api.plugin_endpoints import router as plugin_router
+from src.api.file_endpoints import router as file_router
+# Temporarily disabled due to email-validator dependency issue
+# from src.api.auth_endpoints import router as auth_router
+from src.api.monitoring_endpoints import router as monitoring_router
+from src.api.performance_endpoints import router as performance_router
+from src.api.preset_endpoints import router as preset_router
 
 app.include_router(configs_router)
 app.include_router(external_router)
 app.include_router(ml_router)
 app.include_router(plugin_router)
+app.include_router(file_router)
+# app.include_router(auth_router)
+app.include_router(monitoring_router)
+app.include_router(performance_router)
+app.include_router(preset_router)
 
 
 # ============================================================================
@@ -2009,4 +2987,98 @@ app.include_router(plugin_router)
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
+
+
+def schedule_thrml_rebuild() -> None:
+    """Trigger (or queue) an asynchronous THRML wrapper rebuild."""
+    global thrml_rebuild_task, thrml_rebuild_requested
+
+    loop = asyncio.get_running_loop()
+    if thrml_rebuild_task and not thrml_rebuild_task.done():
+        thrml_rebuild_requested = True
+        return
+
+    thrml_rebuild_requested = False
+    thrml_rebuild_task = loop.create_task(rebuild_thrml_wrapper_async())
+
+
+async def rebuild_thrml_wrapper_async() -> None:
+    """Rebuild the THRML wrapper off the event loop to avoid long blocking operations."""
+    global sim_state, thrml_wrapper, thrml_rebuild_task, thrml_rebuild_requested, thrml_rebuild_lock
+
+    if thrml_rebuild_lock is None:
+        thrml_rebuild_lock = asyncio.Lock()
+
+    async with thrml_rebuild_lock:
+        current_state = sim_state
+        if current_state is None:
+            thrml_rebuild_task = None
+            return
+
+        n_active = int(jnp.sum(current_state.node_active_mask))
+        if n_active <= 0:
+            thrml_wrapper = None
+            sim_state = current_state._replace(thrml_model_data=None)
+            restart = thrml_rebuild_requested
+            thrml_rebuild_requested = False
+            thrml_rebuild_task = None
+            if restart:
+                schedule_thrml_rebuild()
+            return
+
+        weights = np.array(current_state.ebm_weights[:n_active, :n_active])
+        temperature = float(current_state.thrml_temperature)
+
+    loop = asyncio.get_running_loop()
+
+    def build_wrapper():
+        wrapper = create_thrml_model(
+            n_nodes=n_active,
+            weights=weights,
+            biases=np.zeros(n_active),
+            beta=1.0 / temperature,
+        )
+        return wrapper, wrapper.serialize()
+
+    try:
+        wrapper, serialized = await loop.run_in_executor(None, build_wrapper)
+    except Exception as exc:
+        print(f"[THRML] Failed to rebuild wrapper: {exc}")
+        wrapper = None
+        serialized = None
+
+    restart = False
+    async with thrml_rebuild_lock:
+        if wrapper is not None:
+            current_active = int(jnp.sum(sim_state.node_active_mask))
+            if current_active == n_active:
+                thrml_wrapper = wrapper
+                sim_state = sim_state._replace(thrml_model_data=serialized)
+                print(f"[THRML] Wrapper rebuilt asynchronously with {n_active} nodes")
+            else:
+                restart = True
+        else:
+            restart = True
+
+        if thrml_rebuild_requested:
+            restart = True
+        thrml_rebuild_requested = False
+        thrml_rebuild_task = None
+
+    if restart:
+        schedule_thrml_rebuild()
+
+
+def _build_cors_headers(request) -> Dict[str, str]:
+    origin = request.headers.get("origin")
+    headers = {
+        "Access-Control-Allow-Credentials": "true",
+        "Access-Control-Allow-Methods": request.headers.get("access-control-request-method", "GET,POST,PUT,PATCH,DELETE,OPTIONS"),
+        "Access-Control-Allow-Headers": request.headers.get("access-control-request-headers", "*")
+    }
+    if origin:
+        headers["Access-Control-Allow-Origin"] = origin
+    else:
+        headers["Access-Control-Allow-Origin"] = "*"
+    return headers
 

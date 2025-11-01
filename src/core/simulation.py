@@ -22,7 +22,8 @@ from .ebm import (
     compute_ebm_bias,
     compute_thrml_feedback,
     ebm_update_with_thrml,
-    compute_ebm_energy_thrml
+    compute_ebm_energy_thrml,
+    ebm_cd1_update,
 )
 from .thrml_integration import THRMLWrapper, reconstruct_thrml_wrapper
 
@@ -31,7 +32,9 @@ def simulation_step(
     state: SystemState,
     enable_ebm_feedback: bool = True,
     thrml_wrapper: Optional[THRMLWrapper] = None,
-    modulation_matrix: Optional[Any] = None  # ModulationMatrix instance
+    modulation_matrix: Optional[Any] = None,  # ModulationMatrix instance
+    ml_controller: Optional[Any] = None,  # RealtimeMLController instance
+    enable_wave_thrml_learning: bool = False  # Enable Wave → THRML learning
 ) -> Tuple[SystemState, Optional[THRMLWrapper]]:
     """
     Complete simulation step with THRML integration and modulation.
@@ -111,24 +114,37 @@ def simulation_step(
     
     # === Step 3: THRML P-bit Sampling & Feedback ===
     if enable_ebm_feedback and state.thrml_enabled and thrml_wrapper is not None:
-        # Split key for THRML sampling
-        key, subkey = jax.random.split(state.key)
-        
-        # Sample THRML and compute feedback
-        ebm_feedback = compute_thrml_feedback(
-            thrml_wrapper,
-            gmcs_ebm_bias,
-            state.thrml_temperature,
-            state.thrml_gibbs_steps,
-            subkey
-        )
-        
-        driving_forces = driving_forces + ebm_feedback
-        
-        # Update state key
-        state = state._replace(key=key)
+        try:
+            # Split key for THRML sampling
+            key, subkey = jax.random.split(state.key)
+            
+            # Sample THRML and compute feedback
+            ebm_feedback = compute_thrml_feedback(
+                thrml_wrapper,
+                gmcs_ebm_bias,
+                state.thrml_temperature,
+                state.thrml_gibbs_steps,
+                subkey
+            )
+            
+            # Validate feedback before adding
+            if ebm_feedback is None or not jnp.all(jnp.isfinite(ebm_feedback)):
+                print("[THRML WARNING] Invalid feedback, using zeros")
+                ebm_feedback = jnp.zeros(N_MAX, dtype=jnp.float32)
+            
+            driving_forces = driving_forces + ebm_feedback
+            
+            # Update state key
+            state = state._replace(key=key)
+            
+        except Exception as e:
+            # Graceful degradation on THRML error
+            print(f"[THRML ERROR] Feedback computation failed, disabling THRML: {e}")
+            ebm_feedback = jnp.zeros(N_MAX, dtype=jnp.float32)
+            # Disable THRML in state to prevent further errors
+            state = state._replace(thrml_enabled=False)
     else:
-        ebm_feedback = jnp.zeros(N_MAX)
+        ebm_feedback = jnp.zeros(N_MAX, dtype=jnp.float32)
     
     # === Step 4: Integrate Chua ODEs ===
     new_oscillator_state = integrate_all_oscillators(
@@ -155,19 +171,76 @@ def simulation_step(
     
     # === Step 6: Integrate Wave PDE ===
     c_val = state.c_val[0]
+    
+    # Compute THRML energy and temperature for wave modulation
+    thrml_energy = 0.0
+    thrml_temperature = 1.0
+    if thrml_wrapper is not None:
+        try:
+            # Compute energy from current THRML state
+            thrml_energy = thrml_wrapper.compute_energy()
+            thrml_temperature = 1.0 / float(thrml_wrapper.beta)
+            # Normalize energy to reasonable range
+            thrml_energy = float(jnp.tanh(thrml_energy / 100.0))
+        except:
+            pass  # Use defaults on error
+    
     new_field_p = fdtd_step_wave(
         state.field_p,
         state.field_p_prev,
         source_term_S,
         dt,
         c_val,
-        dx=1.0
+        dx=1.0,
+        thrml_energy=thrml_energy,
+        thrml_temperature=thrml_temperature
     )
     
-    # === Step 7: Update Time ===
+    # === Step 7: Wave → THRML Structure Learning ===
+    if enable_wave_thrml_learning and thrml_wrapper is not None:
+        try:
+            from .thrml_integration import update_thrml_from_wave_correlations
+            thrml_wrapper = update_thrml_from_wave_correlations(
+                thrml_wrapper,
+                new_field_p,
+                new_oscillator_state,
+                state.node_positions,
+                eta=0.001
+            )
+        except Exception as e:
+            print(f"[WAVE-THRML LEARNING] Failed: {e}")
+    
+    # === Step 8: ML Real-Time Control ===
+    if ml_controller is not None:
+        try:
+            # Build state dict for controller
+            state_dict = {
+                'oscillator_state': new_oscillator_state,
+                'field_p': new_field_p,
+                'time': state.t + dt
+            }
+            
+            # Get control signal from ML controller
+            ml_control = ml_controller.step(state_dict)
+            
+            # Apply control to oscillator states
+            # Control is applied to x component
+            control_3d = jnp.zeros_like(new_oscillator_state)
+            control_3d = control_3d.at[:, 0].set(ml_control)
+            new_oscillator_state = new_oscillator_state + control_3d * dt
+            
+            # Online learning every 10 steps
+            t_scalar = float(state.t[0]) if state.t.ndim > 0 else float(state.t)
+            if int(t_scalar / dt) % 10 == 0:
+                ml_controller.train_online()
+                
+        except Exception as e:
+            print(f"[ML CONTROLLER] Failed: {e}")
+    
+    # === Step 9: Update Time ===
     new_t = state.t + dt
     
-    # === Step 8: Return Updated State ===
+    # === Step 10: Return Updated State ===
     new_state = state._replace(
         t=new_t,
         oscillator_state=new_oscillator_state,
@@ -238,6 +311,30 @@ def simulation_step_with_thrml_learning(
     new_state = new_state._replace(thrml_model_data=thrml_data)
     
     return new_state, thrml_wrapper
+
+
+def simulation_step_with_ebm_learning(
+    state: SystemState,
+    eta: float = 0.01
+) -> SystemState:
+    """Simulation step followed by a lightweight EBM CD-1 update."""
+
+    new_state, thrml_wrapper = simulation_step(
+        state,
+        enable_ebm_feedback=True,
+        thrml_wrapper=None,
+    )
+
+    key, subkey = jax.random.split(new_state.key)
+    updated_weights, _ = ebm_cd1_update(
+        new_state.ebm_weights,
+        new_state.oscillator_state,
+        new_state.node_active_mask,
+        subkey,
+        eta,
+    )
+
+    return new_state._replace(ebm_weights=updated_weights, key=key)
 
 
 def run_simulation(

@@ -1,0 +1,25 @@
+[MASTER]
+ignore=tests,thrml-main,THRML-Testing-main
+jobs=0
+
+[MESSAGES CONTROL]
+disable=
+    C0103,  # Invalid name
+    C0114,  # Missing module docstring
+    C0115,  # Missing class docstring
+    C0116,  # Missing function docstring
+    R0913,  # Too many arguments
+    R0914,  # Too many local variables
+    W0212,  # Access to protected member
+    W0621,  # Redefining name from outer scope
+
+[FORMAT]
+max-line-length=120
+
+[BASIC]
+good-names=i,j,k,x,y,z,dt,t,lr,_
+
+[DESIGN]
+max-args=10
+max-attributes=15
+

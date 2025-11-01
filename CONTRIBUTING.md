@@ -1,25 +1,41 @@
 # Contributing to GMCS
 
-Thank you for your interest in contributing to the GMCS Universal Platform! This document provides guidelines and instructions for contributing.
+Thank you for your interest in contributing to the GMCS (Generalized Modular Control System) project. This document provides guidelines for contributing bug fixes, improvements, and troubleshooting to the codebase. It reflects the November 2025 THRML/node integration refresh.
 
-## Ways to Contribute
+## Table of Contents
 
-- **Bug Reports**: Found a bug? Open an issue with detailed reproduction steps
-- **Feature Requests**: Have an idea? Propose it in the discussions or issues
-- **Code Contributions**: Submit pull requests for bug fixes or new features
-- **Documentation**: Improve docs, add examples, or write tutorials
-- **Testing**: Write tests, report edge cases, or improve test coverage
-- **Domain Presets**: Create new application presets for different domains
-- **GMCS Algorithms**: Implement new signal processing algorithms
+- [Code of Conduct](#code-of-conduct)
+- [Getting Started](#getting-started)
+- [Development Environment](#development-environment)
+- [Architecture Principles](#architecture-principles)
+- [Bug Fixes and Troubleshooting](#bug-fixes-and-troubleshooting)
+- [Code Style](#code-style)
+- [Testing](#testing)
+- [Submitting Changes](#submitting-changes)
+- [Reporting Issues](#reporting-issues)
+
+## Code of Conduct
+
+Be respectful and professional. We value technical discussions and constructive feedback. Personal attacks or harassment will not be tolerated.
 
 ## Getting Started
 
-### Development Setup
+1. Fork the repository
+2. Clone your fork locally
+3. Set up the development environment (see below)
+4. Create a feature branch from `main`
+5. Make your changes
+6. Test thoroughly
+7. Submit a pull request
+
+## Development Environment
+
+### Backend Setup
 
 ```bash
-# Clone the repository
-git clone https://github.com/gavriel-tech/Chaotic-Neuro-Computational-Substrate.git
-cd gmcs
+# Clone your fork
+git clone https://github.com/YOUR_USERNAME/Chaotic-Neuro-Computational-Substrate
+cd Chaotic-Neuro-Computational-Substrate
 
 # Create virtual environment
 python -m venv .venv
@@ -27,14 +43,9 @@ source .venv/bin/activate  # Windows: .venv\Scripts\activate
 
 # Install dependencies
 pip install -r requirements.txt
-pip install -e .  # Editable install
 
-# Install pre-commit hooks (optional)
-pip install pre-commit
-pre-commit install
-
-# Run tests to verify setup
-pytest tests/ -v
+# Verify installation
+python -m pytest tests/ -v
 ```
 
 ### Frontend Setup
@@ -42,295 +53,357 @@ pytest tests/ -v
 ```bash
 cd frontend
 npm install
-npm run dev
+npm run dev  # Next.js dev server (consumes REST + websocket APIs)
 ```
 
-## Development Workflow
+### GPU Setup
 
-### 1. Create a Branch
+The system uses JAX for GPU acceleration. JAX automatically detects CUDA, ROCm, or Metal:
 
 ```bash
-git checkout -b feature/your-feature-name
-# or
-git checkout -b fix/bug-description
+# Check GPU availability
+python -c "import jax; print(jax.devices())"
 ```
 
-### 2. Make Changes
+If you encounter GPU issues, see the JAX documentation for platform-specific setup.
 
-- Follow the existing code style (see Style Guide below)
-- Write clear, descriptive commit messages
-- Add tests for new functionality
-- Update documentation as needed
+## Architecture Principles
 
-### 3. Test Your Changes
+The GMCS architecture follows several core design patterns. When contributing, respect these principles:
+
+### 1. Immutable State (JAX PyTree)
+
+The system uses JAX's functional programming paradigm with immutable PyTree structures. Never mutate `SystemState` directly:
+
+```python
+# Correct
+new_state = state._replace(t=state.t + dt)
+
+# Incorrect
+state.t += dt  # This won't work - state is immutable
+```
+
+### 2. Pre-allocated Arrays
+
+All arrays are pre-allocated to maximum size (`N_MAX`, `GRID_W`, `GRID_H`). Active nodes are controlled via `node_active_mask`. This enables JIT compilation without dynamic resizing:
+
+```python
+# Node activation/deactivation uses masking
+new_mask = state.node_active_mask.at[node_id].set(1.0)  # Activate
+new_mask = state.node_active_mask.at[node_id].set(0.0)  # Deactivate
+```
+
+### 3. Separation of Concerns
+
+The system is divided into distinct layers:
+
+- **Core Layer** - Oscillators, wave PDE, THRML integration (JIT-compiled where possible)
+- **API Layer** - FastAPI endpoints, WebSocket handling
+- **Node System** - High-level node graph execution
+- **Frontend** - React/Next.js UI, completely decoupled from backend
+
+Don't mix concerns between layers. For example, don't add JAX code to the API layer or business logic to the core simulation functions.
+
+### 4. Plugin Architecture
+
+Custom functionality should be added via the plugin system rather than modifying core code. Plugins live in `src/plugins/custom/` and are discovered dynamically.
+
+## Bug Fixes and Troubleshooting
+
+### Before Starting
+
+1. **Search existing issues** - Your bug may already be reported or fixed
+2. **Reproduce the bug** - Document exact steps to reproduce
+3. **Check recent changes** - Review recent commits that might have introduced the issue
+4. **Isolate the problem** - Narrow down which component is failing
+
+### Common Bug Categories
+
+#### Simulation Instability
+
+If oscillators or the wave field are exploding:
+
+- Check `dt` value (should be 0.01 or smaller)
+- Verify forcing amplitudes are reasonable
+- Check for NaN propagation in state arrays
+- Ensure node positions are within grid bounds
+
+#### THRML Integration Issues
+
+If THRML sampling fails or produces errors:
+
+- Verify THRML is installed: `pip show thrml`
+- Check that `n_active_nodes > 0` before creating/rebuilding THRML models
+- Ensure weight matrix is symmetric for Ising models
+- Validate temperature parameter is positive and CD-k ≥ 1
+- When exposing node/THRML data through new endpoints, reuse `_serialize_node` helpers so the frontend stays in sync
+
+#### WebSocket Connection Problems
+
+If the frontend can't connect:
+
+- Verify backend is running on the expected port
+- Check CORS configuration in `src/api/server.py`
+- Look for WebSocket upgrade errors in browser console
+- Ensure no firewall is blocking the connection
+- Confirm `/status` and `/nodes` endpoints return healthy JSON; the node graph depends on both REST and websocket channels
+
+#### Node Execution Failures
+
+If specific nodes crash:
+
+- Check node configuration parameters are within valid ranges
+- Verify input data types match expected types
+- Look for missing imports or dependencies
+- Check node implementation for edge cases
+
+### Making the Fix
+
+1. **Create a test first** - Write a test that fails with the bug
+2. **Fix the issue** - Make minimal changes to fix the bug
+3. **Verify the fix** - Ensure your test now passes
+4. **Test side effects** - Run full test suite to catch regressions
+5. **Document the fix** - Update comments if behavior changed
+
+### Example Bug Fix Process
 
 ```bash
-# Run all tests
-pytest tests/ -v
+# Create feature branch
+git checkout -b fix/oscillator-nan-handling
 
-# Run specific test file
-pytest tests/test_core.py -v
+# Write failing test
+# Edit tests/test_stability.py
 
-# Run with coverage
-pytest tests/ --cov=src --cov-report=html
+# Run test to confirm it fails
+pytest tests/test_stability.py::test_oscillator_nan_handling -v
 
-# Run stability tests
-pytest tests/test_stability.py -v --slow
+# Make the fix
+# Edit src/core/integrators.py
 
-# Run benchmarks
-python -m src.tools.perf
+# Verify fix
+pytest tests/test_stability.py::test_oscillator_nan_handling -v
+
+# Run full suite
+pytest
+
+# Commit
+git add tests/test_stability.py src/core/integrators.py
+git commit -m "Fix NaN handling in Chua integrator"
 ```
 
-### 4. Submit a Pull Request
-
-- Push your branch to GitHub
-- Create a pull request with a clear description
-- Link related issues
-- Wait for review and address feedback
-
-## Code Style Guide
+## Code Style
 
 ### Python
 
-We follow [PEP 8](https://pep8.org/) with some modifications:
+We use Black, Ruff, and MyPy for code quality:
 
-- **Line length**: 100 characters (not 79)
-- **Type hints**: Always use type hints for function signatures
-- **Docstrings**: Google-style docstrings for all public functions
-- **Formatting**: Use `black` for auto-formatting
+```bash
+# Format code
+black src/ tests/
+
+# Lint
+ruff check src/ tests/
+
+# Type check
+mypy src/
+```
+
+### Style Guidelines
+
+- Maximum line length: 100 characters (Black default)
+- Use type hints for all function signatures
+- Docstrings required for public functions (Google style)
+- Prefer explicit over implicit (e.g., specify types, don't use `from module import *`)
+
+### Docstring Format
 
 ```python
-def example_function(param1: int, param2: str) -> bool:
+def simulation_step(
+    state: SystemState,
+    enable_ebm_feedback: bool = True
+) -> Tuple[SystemState, Optional[THRMLWrapper]]:
     """
-    Brief description of function.
+    Execute one simulation step with THRML integration.
     
     Args:
-        param1: Description of param1
-        param2: Description of param2
+        state: Current system state
+        enable_ebm_feedback: Whether to apply THRML feedback
         
     Returns:
-        Description of return value
+        Tuple of (new_state, thrml_wrapper)
         
     Raises:
-        ValueError: When something goes wrong
+        ValueError: If state is invalid
     """
     pass
 ```
 
-### TypeScript/React
+### JavaScript/TypeScript
 
-- **Style**: Follow Airbnb style guide
-- **Components**: Use functional components with hooks
-- **Types**: Prefer explicit interfaces over inline types
-- **Formatting**: Use Prettier
-
-```typescript
-interface ComponentProps {
-  value: number;
-  onChange: (value: number) => void;
-}
-
-export const MyComponent: React.FC<ComponentProps> = ({ value, onChange }) => {
-  return <div>{value}</div>;
-};
+```bash
+# Frontend formatting
+cd frontend
+npm run lint
+npm run type-check
 ```
 
-### Commit Messages
+Follow the existing patterns in the Next.js codebase.
 
-Follow [Conventional Commits](https://www.conventionalcommits.org/):
+## Testing
 
+### Running Tests
+
+```bash
+# Backend: full suite (includes THRML + API checks)
+python -m pytest
+
+# Backend: focused THRML/node integration
+python -m pytest tests/test_thrml_integration.py -v
+
+# Backend: coverage report
+python -m pytest --cov=src --cov-report=html
+
+# Frontend lint + tests
+cd frontend
+npm run lint
+npm run test
 ```
-feat: add optical Kerr algorithm to GMCS pipeline
-fix: resolve NaN in wave PDE boundary conditions
-docs: update API reference for /session/create
-test: add stability tests for 1024 nodes
-refactor: simplify EBM weight update logic
-perf: optimize field downsampling for WebSocket
-```
-
-## Testing Guidelines
 
 ### Writing Tests
 
-- **Unit tests**: Test individual functions/modules in isolation
-- **Integration tests**: Test component interactions
-- **Stability tests**: Test long-running scenarios and edge cases
-- **Performance tests**: Benchmark critical paths
+Tests should be:
+
+- **Isolated** - Don't depend on other tests
+- **Deterministic** - Use fixed random seeds
+- **Fast** - Mock expensive operations when possible
+- **Clear** - Test one thing at a time
+
+Example test structure:
 
 ```python
-def test_my_feature():
-    """Test that my feature works correctly."""
-    # Arrange
-    state = initialize_system_state(jax.random.PRNGKey(0))
+def test_node_activation():
+    """Test that node activation updates the mask correctly."""
+    # Setup
+    key = jax.random.PRNGKey(42)
+    state = initialize_system_state(key)
     
-    # Act
-    result = my_function(state)
+    # Execute
+    state, node_id = add_node_to_state(state, position=[128, 128])
     
-    # Assert
-    assert result is not None
-    assert validate_state(result)
+    # Verify
+    assert state.node_active_mask[node_id] == 1.0
+    assert jnp.sum(state.node_active_mask) == 1.0
 ```
 
-### Test Coverage
+### Test Categories
 
-- Aim for >80% coverage on critical modules
-- All new features must include tests
-- Bug fixes should include regression tests
+- `tests/test_*.py` - Unit tests for individual components
+- `tests/test_thrml_integration.py` - Backend THRML/node sanity checks
+- `tests/test_integration.py` - Integration tests across components
+- `tests/test_api_*.py` - API endpoint tests
+- `tests/test_stability.py` - Numerical stability tests
 
-## Documentation
+## Submitting Changes
 
-### Where to Document
+### Pull Request Process
 
-- **Code**: Docstrings for public APIs
-- **README.md**: High-level overview and quick start
-- **docs/**: Detailed documentation and guides
-- **Examples**: Standalone scripts in `examples/`
+1. **Update from main** - Rebase your branch on latest main
+2. **Run all tests** - Ensure nothing is broken
+3. **Update documentation** - Add docstrings, update README if needed
+4. **Write clear commit messages** - Explain what and why
+5. **Create PR** - Use the PR template
 
-### Documentation Style
+### Commit Message Format
 
-- Use clear, concise language
-- Include code examples
-- Explain *why*, not just *what*
-- Keep it up-to-date with code changes
+```
+<type>: <short summary>
 
-## Reporting Bugs
+<detailed description>
 
-### Good Bug Reports Include
+Fixes #<issue_number>
+```
 
-1. **Clear title**: Summarize the issue
-2. **Environment**: OS, Python version, GPU/CPU
-3. **Steps to reproduce**: Minimal code example
-4. **Expected behavior**: What should happen
-5. **Actual behavior**: What actually happens
-6. **Screenshots/logs**: If applicable
+Types: `fix`, `feat`, `docs`, `style`, `refactor`, `test`, `chore`
 
-### Bug Report Template
+Example:
+
+```
+fix: Handle NaN propagation in Chua integrator
+
+Added checks for NaN values in oscillator state and reset
+to small random values to prevent complete simulation failure.
+Also added unit test to verify NaN handling.
+
+Fixes #123
+```
+
+### Pull Request Checklist
+
+- [ ] Tests pass locally
+- [ ] Code follows style guidelines (Black, Ruff, MyPy)
+- [ ] New tests added for new functionality
+- [ ] Documentation updated
+- [ ] No merge conflicts with main
+- [ ] Commit messages are clear
+- [ ] PR description explains the change
+
+### Review Process
+
+1. Automated tests run on your PR
+2. Maintainers review code
+3. Address feedback if requested
+4. Once approved, maintainers merge
+
+## Reporting Issues
+
+### Bug Reports
+
+Include:
+
+1. **Description** - What happened vs. what you expected
+2. **Steps to reproduce** - Exact commands/actions to trigger the bug
+3. **Environment** - OS, Python version, GPU type, JAX version
+4. **Error messages** - Full stack traces
+5. **Code samples** - Minimal code that reproduces the issue
+
+### Issue Template
 
 ```markdown
-**Environment:**
+## Bug Description
+Brief description of the bug.
+
+## Steps to Reproduce
+1. Run command X
+2. Click button Y
+3. Observe error Z
+
+## Expected Behavior
+What should happen.
+
+## Actual Behavior
+What actually happens.
+
+## Environment
 - OS: Ubuntu 22.04
-- Python: 3.10.12
-- JAX: 0.4.23
-- GPU: NVIDIA RTX 3090
+- Python: 3.10.8
+- JAX: 0.4.20
+- GPU: NVIDIA RTX 3080
+- CUDA: 11.8
 
-**Describe the bug:**
-Wave field becomes NaN after ~500 steps with high wave speed.
-
-**To Reproduce:**
-\`\`\`python
-state = initialize_system_state(key, dt=0.01)
-state = state._replace(c_val=jnp.array([5.0]))
-for i in range(1000):
-    state = simulation_step(state)
-    print(f"Step {i}: max field = {jnp.max(jnp.abs(state.field_p))}")
-\`\`\`
-
-**Expected:** Field remains bounded
-**Actual:** Field becomes NaN after ~500 steps
-
-**Additional context:**
-This only happens with c_val > 3.0
+## Error Messages
+```
+<paste full error here>
 ```
 
-## Feature Requests
-
-### Good Feature Requests Include
-
-1. **Use case**: What problem does it solve?
-2. **Proposed solution**: How should it work?
-3. **Alternatives**: Other approaches considered
-4. **Examples**: Similar features in other projects
-
-## Architecture Guidelines
-
-### Adding New GMCS Algorithms
-
-1. Add algorithm constant to `src/core/gmcs_pipeline.py`
-2. Implement pure function: `jnp.ndarray → jnp.ndarray`
-3. Add to `apply_single_algo` switch statement
-4. Write unit tests
-5. Update documentation
-
-```python
-ALGO_NEW_FEATURE = 10
-
-def new_feature_function(x: jnp.ndarray, param: float) -> jnp.ndarray:
-    """Apply new feature transformation."""
-    return jnp.tanh(x * param)
+## Additional Context
+Any other relevant information.
 ```
-
-### Adding New Domain Presets
-
-1. Create preset in `src/config/presets.py`
-2. Define `ApplicationConfig` with appropriate adapters
-3. Add tests in `tests/test_integration.py`
-4. Document in `docs/domain_presets.md`
-
-### Modifying Core Simulation
-
-- ⚠️ Core modules (`state.py`, `simulation.py`) are sensitive
-- Always maintain JAX immutability
-- Preserve JIT compatibility
-- Add extensive tests for any changes
-- Benchmark performance impact
-
-## Community
-
-- **GitHub Discussions**: Ask questions, share ideas
-- **Issue Tracker**: Report bugs, request features
-- **Pull Requests**: Contribute code
-
-## Code of Conduct
-
-### Our Pledge
-
-We are committed to providing a welcoming and inclusive environment.
-
-### Expected Behavior
-
-- Be respectful and constructive
-- Welcome newcomers
-- Give and receive feedback gracefully
-- Focus on what's best for the community
-
-### Unacceptable Behavior
-
-- Harassment, discrimination, or offensive comments
-- Trolling or inflammatory remarks
-- Spam or off-topic content
-
-## Priority Areas
-
-### High Priority
-
-- Performance optimizations (GPU utilization, memory efficiency)
-- Additional GMCS algorithms (optical Kerr, resonators, etc.)
-- Domain-specific presets (RL, scientific computing, etc.)
-- Comprehensive documentation and tutorials
-
-### Medium Priority
-
-- Web-based configuration UI
-- Real-time parameter visualization
-- Pre-built Docker images
-- Integration examples (PyTorch, TensorFlow, etc.)
-
-### Nice to Have
-
-- Mobile visualization app
-- Cloud deployment templates
-- Community preset gallery
-- Interactive tutorials
 
 ## Questions?
 
-- Open a [GitHub Discussion](https://github.com/gavriel-tech/Chaotic-Neuro-Computational-Substrate/discussions)
-- Check existing [issues](https://github.com/gavriel-tech/Chaotic-Neuro-Computational-Substrate/issues) and docs
-- Website: [gavriel.tech](https://gavriel.tech)
-- Twitter/X: [@GavrielTech](https://x.com/GavrielTech)
+For questions about the architecture or contribution process, open a GitHub discussion or issue.
 
----
+## License
 
-Thank you for contributing to GMCS! 🌊✨
-
+By contributing, you agree that your contributions will be licensed under the MIT License.
 

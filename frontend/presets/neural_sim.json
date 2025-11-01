@@ -1,0 +1,37 @@
+{
+  "id": "neural_sim",
+  "name": "Biological Neural Network Simulation",
+  "version": "1.0",
+  "description": "Simulate brain-like neural networks with spiking neurons, synaptic plasticity via THRML, and activity monitoring. Explore emergence of neural patterns and learning.",
+  "category": "Scientific",
+  "tags": ["neuroscience", "neural-network", "spiking", "plasticity", "simulation"],
+  "author": "GMCS Team",
+  "created": "2025-10-31",
+  
+  "nodes": [
+    {"id": "neuron_array", "type": "processor", "name": "Spiking Neuron Array", "position": {"x": 300, "y": 300}, "config": {"num_neurons": 1000, "model": "leaky_integrate_fire", "connectivity": 0.1}},
+    {"id": "synapse_matrix", "type": "processor", "name": "Synaptic Connections", "position": {"x": 550, "y": 300}, "config": {"initial_weights": "random", "weight_range": [0, 1], "sparsity": 0.9}},
+    {"id": "thrml_plasticity", "type": "thrml", "name": "THRML Plasticity Rule", "position": {"x": 800, "y": 300}, "config": {"num_nodes": 1000, "temperature": 1.2, "custom_energy": "hebbian_energy"}},
+    {"id": "external_input", "type": "generator", "name": "External Stimulation", "position": {"x": 100, "y": 300}, "config": {"pattern": "poisson", "rate": 10, "target_neurons": [0, 100]}},
+    {"id": "activity_monitor", "type": "analysis", "name": "Activity Monitor", "position": {"x": 1050, "y": 300}, "config": {"metrics": ["firing_rate", "synchrony", "burst_index"]}},
+    {"id": "plasticity_controller", "type": "control", "name": "Learning Rate Controller", "position": {"x": 800, "y": 150}, "config": {"type": "PID Controller", "Kp": 0.1, "Ki": 0.01, "setpoint": 0.3}},
+    {"id": "viz_raster", "type": "visualizer", "name": "Spike Raster Plot", "position": {"x": 300, "y": 550}, "config": {"type": "Raster Plot", "time_window": 1.0, "active": true}},
+    {"id": "viz_network", "type": "visualizer", "name": "Network Connectivity", "position": {"x": 550, "y": 550}, "config": {"type": "Network Graph", "layout": "force_directed", "active": true}},
+    {"id": "viz_activity", "type": "visualizer", "name": "Population Activity", "position": {"x": 1050, "y": 550}, "config": {"type": "Time Series", "signals": ["firing_rate", "synchrony"], "active": true}}
+  ],
+  
+  "connections": [
+    {"from": "external_input.pattern", "to": "neuron_array.input"},
+    {"from": "neuron_array.spikes", "to": "synapse_matrix.pre_spikes"},
+    {"from": "synapse_matrix.weighted_input", "to": "neuron_array.synaptic_input"},
+    {"from": "neuron_array.spikes", "to": "thrml_plasticity.activity"},
+    {"from": "thrml_plasticity.samples", "to": "synapse_matrix.weight_updates"},
+    {"from": "neuron_array.spikes", "to": "activity_monitor.input"},
+    {"from": "activity_monitor.firing_rate", "to": "plasticity_controller.measurement"},
+    {"from": "plasticity_controller.control", "to": "thrml_plasticity.temperature"},
+    {"from": "neuron_array.spikes", "to": "viz_raster.data"},
+    {"from": "synapse_matrix.weights", "to": "viz_network.data"},
+    {"from": "activity_monitor.metrics", "to": "viz_activity.data"}
+  ]
+}
+

@@ -325,10 +325,11 @@ export const THRMLSpinMatrix: React.FC<VisualizerProps> = ({
 export const THRMLCorrelationMatrix: React.FC<VisualizerProps> = ({ 
   width, 
   height, 
-  showColorBar = true 
+  showColorBar: initialShowColorBar = true 
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [correlations, setCorrelations] = useState<number[][]>([]);
+  const [showColorBar, setShowColorBar] = useState(initialShowColorBar);
 
   useEffect(() => {
     const fetchCorrelations = async () => {

@@ -1,0 +1,328 @@
+{
+  "id": "rl_boost",
+  "name": "Chaos-Accelerated Reinforcement Learning",
+  "version": "1.0",
+  "description": "Accelerate RL training by using chaotic exploration to discover diverse experiences faster than random exploration. THRML helps focus exploration on promising regions of state space.",
+  "category": "AI/ML",
+  "tags": ["reinforcement-learning", "rl", "chaos", "exploration", "training"],
+  "author": "GMCS Team",
+  "created": "2025-10-31",
+  
+  "documentation": {
+    "overview": "Traditional RL uses epsilon-greedy or Gaussian noise for exploration. This preset uses chaotic oscillators to generate structured, diverse exploration patterns. THRML samples high-value state regions, combining chaos (exploration) with energy-based guidance (exploitation). Demonstrated on classic control tasks.",
+    "expectedBehavior": "The RL agent learns faster than baseline methods. You'll see the chaos explorer discovering novel states that the agent wouldn't find with random exploration. The value function rapidly improves, and the agent solves tasks in fewer episodes.",
+    "parameters": {
+      "chaos_strength": "How much chaotic exploration vs learned policy",
+      "thrml_temp": "Temperature for value-based state sampling",
+      "learning_rate": "RL agent learning rate"
+    },
+    "successMetrics": [
+      "Solve CartPole in <50 episodes (baseline: ~150)",
+      "Achieve 90% of optimal reward in half the time",
+      "Discover >3x more unique states than random exploration"
+    ]
+  },
+
+  "nodes": [
+    {
+      "id": "environment",
+      "type": "rl_env",
+      "name": "RL Environment",
+      "position": {"x": 100, "y": 250},
+      "config": {
+        "env_name": "CartPole-v1",
+        "render": true,
+        "max_episode_steps": 500
+      }
+    },
+    {
+      "id": "rl_agent",
+      "type": "ml",
+      "name": "PPO Agent",
+      "position": {"x": 400, "y": 250},
+      "config": {
+        "type": "RL Controller",
+        "state_dim": 4,
+        "action_dim": 2,
+        "algorithm": "ppo",
+        "learning_rate": 0.0003,
+        "gamma": 0.99,
+        "clip_epsilon": 0.2
+      }
+    },
+    {
+      "id": "chaos_explorer",
+      "type": "oscillator",
+      "name": "Chaotic Action Explorer",
+      "position": {"x": 400, "y": 100},
+      "config": {
+        "count": 4,
+        "alpha": 15.6,
+        "beta": 28.0,
+        "m0": -1.143,
+        "m1": -0.714,
+        "initial_state": "random",
+        "enable_coupling": true
+      }
+    },
+    {
+      "id": "thrml_value",
+      "type": "thrml",
+      "name": "THRML Value Sampler",
+      "position": {"x": 700, "y": 250},
+      "config": {
+        "num_nodes": 100,
+        "node_type": "continuous",
+        "temperature": 1.0,
+        "num_samples": 10,
+        "mode": "SPEED",
+        "custom_energy": "rl_value_function"
+      }
+    },
+    {
+      "id": "exploration_mixer",
+      "type": "processor",
+      "name": "Exploration Mixer",
+      "position": {"x": 550, "y": 250},
+      "config": {
+        "policy_weight": 0.7,
+        "chaos_weight": 0.2,
+        "thrml_weight": 0.1,
+        "adaptive": true
+      }
+    },
+    {
+      "id": "replay_buffer",
+      "type": "storage",
+      "name": "Experience Replay Buffer",
+      "position": {"x": 700, "y": 400},
+      "config": {
+        "capacity": 100000,
+        "batch_size": 64,
+        "prioritization": "diversity"
+      }
+    },
+    {
+      "id": "value_estimator",
+      "type": "ml",
+      "name": "Value Function",
+      "position": {"x": 850, "y": 250},
+      "config": {
+        "type": "MLP Predictor",
+        "input_dim": 4,
+        "hidden_dims": [64, 64],
+        "output_dim": 1
+      }
+    },
+    {
+      "id": "exploration_controller",
+      "type": "control",
+      "name": "Adaptive Exploration Controller",
+      "position": {"x": 550, "y": 100},
+      "config": {
+        "type": "PID Controller",
+        "Kp": 0.1,
+        "Ki": 0.01,
+        "Kd": 0.005,
+        "setpoint": 0.5
+      }
+    },
+    {
+      "id": "env_viz",
+      "type": "visualizer",
+      "name": "Environment Render",
+      "position": {"x": 100, "y": 500},
+      "config": {
+        "type": "Environment Display",
+        "width": 400,
+        "height": 300,
+        "active": true
+      }
+    },
+    {
+      "id": "reward_viz",
+      "type": "visualizer",
+      "name": "Reward Tracking",
+      "position": {"x": 400, "y": 500},
+      "config": {
+        "type": "Time Series",
+        "signals": ["episode_reward", "running_average", "baseline"],
+        "history_length": 200,
+        "active": true
+      }
+    },
+    {
+      "id": "exploration_viz",
+      "type": "visualizer",
+      "name": "State Space Coverage",
+      "position": {"x": 700, "y": 500},
+      "config": {
+        "type": "2D Density Plot",
+        "x_axis": "position",
+        "y_axis": "velocity",
+        "show_trajectory": true,
+        "active": true
+      }
+    },
+    {
+      "id": "value_viz",
+      "type": "visualizer",
+      "name": "Value Function Heatmap",
+      "position": {"x": 1000, "y": 500},
+      "config": {
+        "type": "2D Heatmap",
+        "resolution": [50, 50],
+        "active": true
+      }
+    }
+  ],
+
+  "connections": [
+    {
+      "from": "environment.state",
+      "to": "rl_agent.state",
+      "description": "Current state to agent"
+    },
+    {
+      "from": "environment.state",
+      "to": "chaos_explorer.initial_conditions",
+      "description": "State seeds chaotic exploration"
+    },
+    {
+      "from": "rl_agent.action",
+      "to": "exploration_mixer.policy_action",
+      "description": "Learned policy action"
+    },
+    {
+      "from": "chaos_explorer.x",
+      "to": "exploration_mixer.chaos_action",
+      "description": "Chaotic exploration action"
+    },
+    {
+      "from": "thrml_value.samples",
+      "to": "exploration_mixer.thrml_action",
+      "description": "Value-guided exploration"
+    },
+    {
+      "from": "exploration_mixer.action",
+      "to": "environment.action",
+      "description": "Final mixed action to environment"
+    },
+    {
+      "from": "environment.reward",
+      "to": "rl_agent.reward",
+      "description": "Reward signal for learning"
+    },
+    {
+      "from": "environment.state",
+      "to": "value_estimator.features",
+      "description": "Estimate state value"
+    },
+    {
+      "from": "value_estimator.prediction",
+      "to": "thrml_value.energy",
+      "description": "Value function defines THRML energy"
+    },
+    {
+      "from": "environment.experience",
+      "to": "replay_buffer.add",
+      "description": "Store experience for training"
+    },
+    {
+      "from": "replay_buffer.batch",
+      "to": "rl_agent.train_batch",
+      "description": "Sample batch for training"
+    },
+    {
+      "from": "rl_agent.value",
+      "to": "exploration_controller.measurement",
+      "description": "Value estimate controls exploration"
+    },
+    {
+      "from": "exploration_controller.control",
+      "to": "exploration_mixer.chaos_weight",
+      "description": "Adaptive chaos exploration weight"
+    },
+    {
+      "from": "environment.render",
+      "to": "env_viz.data",
+      "description": "Visualize environment"
+    },
+    {
+      "from": "environment.episode_reward",
+      "to": "reward_viz.episode_reward",
+      "description": "Track episode rewards"
+    },
+    {
+      "from": "environment.state",
+      "to": "exploration_viz.data",
+      "description": "Visualize state space exploration"
+    },
+    {
+      "from": "value_estimator.prediction",
+      "to": "value_viz.data",
+      "description": "Visualize learned value function"
+    }
+  ],
+
+  "initialState": {
+    "description": "Agent starts with high chaos exploration, gradually shifts to learned policy as it improves.",
+    "autoStart": true,
+    "warmupSteps": 0
+  },
+
+  "controls": {
+    "description": "Control RL training dynamics",
+    "parameters": [
+      {
+        "name": "chaos_strength",
+        "label": "Chaos Exploration Strength",
+        "node": "exploration_mixer",
+        "field": "config.chaos_weight",
+        "type": "slider",
+        "min": 0.0,
+        "max": 1.0,
+        "step": 0.05,
+        "default": 0.2
+      },
+      {
+        "name": "thrml_temp",
+        "label": "THRML Temperature",
+        "node": "thrml_value",
+        "field": "config.temperature",
+        "type": "slider",
+        "min": 0.1,
+        "max": 3.0,
+        "step": 0.1,
+        "default": 1.0
+      },
+      {
+        "name": "learning_rate",
+        "label": "Learning Rate",
+        "node": "rl_agent",
+        "field": "config.learning_rate",
+        "type": "slider",
+        "min": 0.0001,
+        "max": 0.01,
+        "step": 0.0001,
+        "default": 0.0003
+      },
+      {
+        "name": "environment",
+        "label": "Environment",
+        "node": "environment",
+        "field": "config.env_name",
+        "type": "select",
+        "options": ["CartPole-v1", "Pendulum-v1", "MountainCar-v0", "Acrobot-v1"],
+        "default": "CartPole-v1"
+      }
+    ]
+  },
+
+  "requirements": {
+    "minGPUMemory": "4GB",
+    "recommendedGPUMemory": "6GB",
+    "gymSupport": true
+  }
+}
+

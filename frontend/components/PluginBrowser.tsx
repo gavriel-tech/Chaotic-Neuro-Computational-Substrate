@@ -6,7 +6,7 @@
 
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 
 interface Plugin {
   plugin_id: string;
@@ -26,11 +26,7 @@ export default function PluginBrowser() {
   const [selectedCategory, setSelectedCategory] = useState('all');
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    fetchPlugins();
-  }, [selectedCategory]);
-
-  const fetchPlugins = async () => {
+  const fetchPlugins = useCallback(async () => {
     try {
       const url = selectedCategory === 'all' 
         ? 'http://localhost:8000/plugins/list'
@@ -43,7 +39,11 @@ export default function PluginBrowser() {
       console.error('Failed to fetch plugins:', error);
       setLoading(false);
     }
-  };
+  }, [selectedCategory]);
+
+  useEffect(() => {
+    fetchPlugins();
+  }, [fetchPlugins]);
 
   const togglePlugin = async (pluginId: string, enabled: boolean) => {
     try {
@@ -101,7 +101,7 @@ export default function PluginBrowser() {
           <div className="col-span-full text-purple-400 text-center py-8">Loading plugins...</div>
         ) : plugins.length === 0 ? (
           <div className="col-span-full text-purple-400/60 text-center py-8">
-            No plugins found. Click "Discover Plugins" to scan for new plugins.
+            No plugins found. Click &quot;Discover Plugins&quot; to scan for new plugins.
           </div>
         ) : (
           plugins.map(plugin => (

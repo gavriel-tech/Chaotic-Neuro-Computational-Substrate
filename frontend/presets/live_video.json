@@ -1,0 +1,326 @@
+{
+  "id": "live_video",
+  "name": "Live Chaotic Video Visuals",
+  "version": "1.0",
+  "description": "Real-time audio-reactive visual synthesis using chaos generators, wave field dynamics, and color mapping. Creates stunning, never-repeating visual patterns synchronized to music or ambient sound.",
+  "category": "Creative",
+  "tags": ["video", "visuals", "audio-reactive", "chaos", "wave", "real-time", "vj"],
+  "author": "GMCS Team",
+  "created": "2025-10-31",
+  
+  "documentation": {
+    "overview": "This preset transforms audio input into mesmerizing visual patterns. Audio features drive chaotic oscillators that feed into a 3D wave field simulation. The wave dynamics are rendered with dynamic color mapping to create fluid, organic visuals perfect for live performances or installations.",
+    "expectedBehavior": "Visuals react instantly to audio input. Low frequencies create slow, organic flows. High frequencies trigger rapid, sharp patterns. Silence produces ambient, slowly evolving visuals. Expect fluid dynamics, interference patterns, and emergent structures.",
+    "parameters": {
+      "audio_sensitivity": "How strongly audio affects visuals",
+      "color_palette": "Visual aesthetic (cool, warm, psychedelic, etc.)",
+      "complexity": "Visual detail level (low for performance, high for quality)"
+    },
+    "successMetrics": [
+      "60 FPS rendering at 1920x1080",
+      "<16ms latency from audio to visual",
+      "Smooth transitions without artifacts"
+    ]
+  },
+
+  "nodes": [
+    {
+      "id": "audio_in",
+      "type": "input",
+      "name": "Audio Input",
+      "position": {"x": 100, "y": 250},
+      "config": {
+        "source": "microphone",
+        "sample_rate": 48000,
+        "buffer_size": 256,
+        "channels": 2
+      }
+    },
+    {
+      "id": "fft_analyzer",
+      "type": "analysis",
+      "name": "FFT Analyzer",
+      "position": {"x": 300, "y": 250},
+      "config": {
+        "size": 1024,
+        "window": "hann",
+        "overlap": 0.5,
+        "bands": ["bass", "mid", "high"]
+      }
+    },
+    {
+      "id": "chaos_gen",
+      "type": "oscillator",
+      "name": "Chaos Generator Array",
+      "position": {"x": 500, "y": 250},
+      "config": {
+        "count": 256,
+        "alpha": 15.6,
+        "beta": 28.0,
+        "m0": -1.143,
+        "m1": -0.714,
+        "initial_state": "lattice",
+        "enable_coupling": true,
+        "coupling_topology": "2d_grid"
+      }
+    },
+    {
+      "id": "wave_field",
+      "type": "wave_pde",
+      "name": "3D Wave Field",
+      "position": {"x": 700, "y": 250},
+      "config": {
+        "grid_size": [128, 128, 64],
+        "wave_speed": 1.0,
+        "damping": 0.01,
+        "boundary": "periodic"
+      }
+    },
+    {
+      "id": "color_mapper",
+      "type": "processor",
+      "name": "Dynamic Color Mapper",
+      "position": {"x": 900, "y": 250},
+      "config": {
+        "palette": "psychedelic",
+        "mode": "wave_amplitude",
+        "brightness": 1.0,
+        "contrast": 1.2,
+        "saturation": 1.5
+      }
+    },
+    {
+      "id": "video_out",
+      "type": "output",
+      "name": "Video Output",
+      "position": {"x": 1100, "y": 250},
+      "config": {
+        "resolution": [1920, 1080],
+        "fps": 60,
+        "output": "window",
+        "fullscreen": false
+      }
+    },
+    {
+      "id": "bass_controller",
+      "type": "control",
+      "name": "Bass Response Controller",
+      "position": {"x": 500, "y": 100},
+      "config": {
+        "type": "Parameter Optimizer",
+        "learning_rate": 0.05,
+        "target_metric": "bass_energy"
+      }
+    },
+    {
+      "id": "high_controller",
+      "type": "control",
+      "name": "High Frequency Controller",
+      "position": {"x": 500, "y": 400},
+      "config": {
+        "type": "Parameter Optimizer",
+        "learning_rate": 0.1,
+        "target_metric": "high_energy"
+      }
+    },
+    {
+      "id": "spectrum_viz",
+      "type": "visualizer",
+      "name": "Audio Spectrum",
+      "position": {"x": 300, "y": 500},
+      "config": {
+        "type": "Spectrum",
+        "fft_size": 1024,
+        "display_range": [20, 20000],
+        "height": 200,
+        "active": true
+      }
+    },
+    {
+      "id": "wave_3d_viz",
+      "type": "visualizer",
+      "name": "Wave Field 3D View",
+      "position": {"x": 700, "y": 500},
+      "config": {
+        "type": "3D Volume",
+        "rendering_mode": "isosurface",
+        "camera_mode": "orbit",
+        "active": true
+      }
+    },
+    {
+      "id": "performance_monitor",
+      "type": "visualizer",
+      "name": "Performance Monitor",
+      "position": {"x": 1100, "y": 500},
+      "config": {
+        "type": "Time Series",
+        "signals": ["fps", "latency", "gpu_usage"],
+        "history_length": 500,
+        "active": true
+      }
+    }
+  ],
+
+  "connections": [
+    {
+      "from": "audio_in.signal",
+      "to": "fft_analyzer.signal",
+      "description": "Audio analyzed for frequency content"
+    },
+    {
+      "from": "fft_analyzer.bands.bass",
+      "to": "bass_controller.current_value",
+      "description": "Bass energy controls low-frequency chaos"
+    },
+    {
+      "from": "fft_analyzer.bands.high",
+      "to": "high_controller.current_value",
+      "description": "High frequencies control rapid visual changes"
+    },
+    {
+      "from": "bass_controller.control_signal",
+      "to": "chaos_gen.alpha",
+      "description": "Bass modulates chaos parameter alpha"
+    },
+    {
+      "from": "high_controller.control_signal",
+      "to": "chaos_gen.beta",
+      "description": "Highs modulate chaos parameter beta"
+    },
+    {
+      "from": "fft_analyzer.bands.mid",
+      "to": "chaos_gen.coupling_strength",
+      "description": "Mids control oscillator coupling"
+    },
+    {
+      "from": "chaos_gen.states",
+      "to": "wave_field.source",
+      "description": "Chaotic dynamics drive wave sources"
+    },
+    {
+      "from": "wave_field.field",
+      "to": "color_mapper.input",
+      "description": "Wave field mapped to colors"
+    },
+    {
+      "from": "color_mapper.image",
+      "to": "video_out.data",
+      "description": "Final video output"
+    },
+    {
+      "from": "fft_analyzer.magnitude",
+      "to": "spectrum_viz.data",
+      "description": "Display audio spectrum"
+    },
+    {
+      "from": "wave_field.field",
+      "to": "wave_3d_viz.data",
+      "description": "3D visualization of wave dynamics"
+    },
+    {
+      "from": "video_out.fps",
+      "to": "performance_monitor.fps",
+      "description": "Monitor rendering performance"
+    },
+    {
+      "from": "audio_in.latency",
+      "to": "performance_monitor.latency",
+      "description": "Monitor audio-to-visual latency"
+    }
+  ],
+
+  "initialState": {
+    "description": "System starts with ambient wave animations. Audio input triggers reactive mode.",
+    "autoStart": true,
+    "warmupSteps": 20
+  },
+
+  "controls": {
+    "description": "Live VJ controls",
+    "parameters": [
+      {
+        "name": "audio_sensitivity",
+        "label": "Audio Sensitivity",
+        "node": "bass_controller",
+        "field": "config.learning_rate",
+        "type": "slider",
+        "min": 0.0,
+        "max": 0.5,
+        "step": 0.01,
+        "default": 0.05
+      },
+      {
+        "name": "color_palette",
+        "label": "Color Palette",
+        "node": "color_mapper",
+        "field": "config.palette",
+        "type": "select",
+        "options": ["psychedelic", "cool", "warm", "monochrome", "neon", "plasma", "rainbow"],
+        "default": "psychedelic"
+      },
+      {
+        "name": "complexity",
+        "label": "Visual Complexity",
+        "node": "wave_field",
+        "field": "config.grid_size",
+        "type": "preset",
+        "options": {
+          "low": [64, 64, 32],
+          "medium": [128, 128, 64],
+          "high": [256, 256, 128]
+        },
+        "default": "medium"
+      },
+      {
+        "name": "wave_speed",
+        "label": "Wave Propagation Speed",
+        "node": "wave_field",
+        "field": "config.wave_speed",
+        "type": "slider",
+        "min": 0.1,
+        "max": 5.0,
+        "step": 0.1,
+        "default": 1.0
+      },
+      {
+        "name": "brightness",
+        "label": "Brightness",
+        "node": "color_mapper",
+        "field": "config.brightness",
+        "type": "slider",
+        "min": 0.0,
+        "max": 2.0,
+        "step": 0.1,
+        "default": 1.0
+      }
+    ],
+    "keybindings": [
+      {
+        "key": "Space",
+        "action": "toggle_fullscreen",
+        "description": "Toggle fullscreen mode"
+      },
+      {
+        "key": "R",
+        "action": "randomize_colors",
+        "description": "Randomize color palette"
+      },
+      {
+        "key": "F",
+        "action": "freeze_audio",
+        "description": "Freeze current audio snapshot"
+      }
+    ]
+  },
+
+  "requirements": {
+    "minGPUMemory": "4GB",
+    "recommendedGPUMemory": "8GB",
+    "audioInput": true,
+    "videoOutput": true,
+    "lowLatency": true,
+    "performanceMode": "real-time"
+  }
+}
+

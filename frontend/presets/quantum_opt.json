@@ -1,0 +1,33 @@
+{
+  "id": "quantum_opt",
+  "name": "Quantum Circuit Optimization",
+  "version": "1.0",
+  "description": "Design optimal quantum circuits using chaotic search through gate sequences. Simulates quantum dynamics and optimizes for high fidelity implementations of target operations.",
+  "category": "Scientific",
+  "tags": ["quantum", "circuits", "optimization", "qc"],
+  "author": "GMCS Team",
+  "created": "2025-10-31",
+  
+  "nodes": [
+    {"id": "circuit_gen", "type": "generator", "name": "Circuit Generator", "position": {"x": 100, "y": 300}, "config": {"gate_set": ["H", "CNOT", "RZ", "RX"], "max_depth": 20, "num_qubits": 4}},
+    {"id": "chaos_search", "type": "oscillator", "name": "Circuit Search", "position": {"x": 100, "y": 450}, "config": {"count": 32, "coupling_topology": "random"}},
+    {"id": "quantum_sim", "type": "processor", "name": "Quantum Simulator", "position": {"x": 400, "y": 300}, "config": {"method": "statevector", "noise_model": "depolarizing", "p_error": 0.001}},
+    {"id": "fidelity_calc", "type": "analysis", "name": "Fidelity Calculator", "position": {"x": 650, "y": 300}, "config": {"target_operation": "QFT", "metric": "average_gate_fidelity"}},
+    {"id": "optimizer", "type": "control", "name": "Circuit Optimizer", "position": {"x": 900, "y": 300}, "config": {"type": "Parameter Optimizer", "optimizer": "adam", "learning_rate": 0.01}},
+    {"id": "thrml_valid", "type": "thrml", "name": "Validity Sampler", "position": {"x": 400, "y": 450}, "config": {"num_nodes": 32, "temperature": 0.6, "custom_energy": "circuit_validity"}},
+    {"id": "viz_circuit", "type": "visualizer", "name": "Circuit Diagram", "position": {"x": 400, "y": 600}, "config": {"type": "Circuit Diagram", "active": true}},
+    {"id": "viz_fidelity", "type": "visualizer", "name": "Fidelity Tracking", "position": {"x": 900, "y": 600}, "config": {"type": "Time Series", "signals": ["fidelity"], "active": true}}
+  ],
+  
+  "connections": [
+    {"from": "circuit_gen.circuit", "to": "quantum_sim.input"},
+    {"from": "chaos_search.states", "to": "circuit_gen.parameters"},
+    {"from": "quantum_sim.state", "to": "fidelity_calc.input"},
+    {"from": "fidelity_calc.fidelity", "to": "optimizer.current_value"},
+    {"from": "optimizer.control_signal", "to": "circuit_gen.parameters"},
+    {"from": "circuit_gen.circuit", "to": "thrml_valid.structure"},
+    {"from": "circuit_gen.circuit", "to": "viz_circuit.data"},
+    {"from": "fidelity_calc.fidelity", "to": "viz_fidelity.fidelity"}
+  ]
+}
+

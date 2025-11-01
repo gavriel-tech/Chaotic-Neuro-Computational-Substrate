@@ -1,0 +1,28 @@
+{
+  "id": "pixel_art",
+  "name": "Pixel Art & Sprite Generation",
+  "version": "1.0",
+  "description": "Generate pixel-perfect game sprites and tiles using GANs trained on retro game aesthetics. Chaos provides diverse starting points, THRML ensures coherence.",
+  "category": "Creative",
+  "tags": ["pixel-art", "game-dev", "sprites", "generative", "gan"],
+  "author": "GMCS Team",
+  "created": "2025-10-31",
+  
+  "nodes": [
+    {"id": "noise_gen", "type": "generator", "name": "Noise Generator", "position": {"x": 100, "y": 250}, "config": {"type": "perlin", "seed": 42}},
+    {"id": "chaos_seed", "type": "oscillator", "name": "Chaos Seeder", "position": {"x": 100, "y": 400}, "config": {"count": 16, "alpha": 15.6}},
+    {"id": "gan", "type": "ml", "name": "Pixel Art GAN", "position": {"x": 400, "y": 300}, "config": {"type": "GAN Generator", "latent_dim": 128, "output_length": 1024, "architecture": "pixel_art"}},
+    {"id": "thrml_style", "type": "thrml", "name": "Style Enforcer", "position": {"x": 700, "y": 300}, "config": {"num_nodes": 256, "temperature": 0.5, "custom_energy": "pixel_coherence"}},
+    {"id": "sprite_formatter", "type": "processor", "name": "Sprite Formatter", "position": {"x": 900, "y": 300}, "config": {"sprite_size": [32, 32], "palette": "nes", "transparent_color": true}},
+    {"id": "output_viz", "type": "visualizer", "name": "Sprite Gallery", "position": {"x": 1100, "y": 300}, "config": {"type": "Grid Visualizer", "grid_size": 8, "active": true}}
+  ],
+  
+  "connections": [
+    {"from": "noise_gen.noise", "to": "gan.latent"},
+    {"from": "chaos_seed.x", "to": "gan.chaos_noise"},
+    {"from": "gan.generated", "to": "thrml_style.bias"},
+    {"from": "thrml_style.samples", "to": "sprite_formatter.input"},
+    {"from": "sprite_formatter.sprites", "to": "output_viz.data"}
+  ]
+}
+

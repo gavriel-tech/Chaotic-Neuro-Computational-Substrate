@@ -1,9 +1,18 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
+import { notify } from '../UI/Notification';
 
 interface NodeCreatorPanelProps {
   onClose: () => void;
+  onCreated?: (response: NodeResponsePayload) => void;
+}
+
+interface NodeResponsePayload {
+  status: string;
+  node_id?: number;
+  message?: string;
+  data?: Record<string, unknown>;
 }
 
 interface Algorithm {
@@ -13,7 +22,9 @@ interface Algorithm {
   description: string;
 }
 
-export const NodeCreatorPanel: React.FC<NodeCreatorPanelProps> = ({ onClose }) => {
+const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000';
+
+export const NodeCreatorPanel: React.FC<NodeCreatorPanelProps> = ({ onClose, onCreated }) => {
   const [nodeName, setNodeName] = useState('');
   const [position, setPosition] = useState({ x: 128, y: 128 });
   const [algorithms, setAlgorithms] = useState<Algorithm[]>([]);
@@ -28,7 +39,7 @@ export const NodeCreatorPanel: React.FC<NodeCreatorPanelProps> = ({ onClose }) =
 
   const fetchAlgorithms = async () => {
     try {
-      const response = await fetch('http://localhost:8000/algorithms/list');
+      const response = await fetch(`${API_BASE}/algorithms/list`);
       const data = await response.json();
       setAlgorithms(data.algorithms || []);
     } catch (err) {
@@ -37,10 +48,12 @@ export const NodeCreatorPanel: React.FC<NodeCreatorPanelProps> = ({ onClose }) =
   };
 
   const addParameter = () => {
-    const paramName = prompt('Enter parameter name (e.g., A_max, R, T):');
-    if (paramName && !parameters[paramName]) {
-      setParameters({ ...parameters, [paramName]: 1.0 });
-    }
+    // TODO: Replace with custom dialog
+    notify.info('Parameter creation: Coming soon! Use default node parameters for now.');
+    // const paramName = prompt('Enter parameter name (e.g., A_max, R, T):');
+    // if (paramName && !parameters[paramName]) {
+    //   setParameters({ ...parameters, [paramName]: 1.0 });
+    // }
   };
 
   const updateParameter = (key: string, value: number) => {
@@ -58,7 +71,7 @@ export const NodeCreatorPanel: React.FC<NodeCreatorPanelProps> = ({ onClose }) =
       setSelectedAlgorithms(selectedAlgorithms.filter(id => id !== algoId));
     } else {
       if (selectedAlgorithms.length >= 8) {
-        alert('Maximum 8 algorithms per chain');
+        notify.error('Maximum 8 algorithms per chain');
         return;
       }
       setSelectedAlgorithms([...selectedAlgorithms, algoId]);
@@ -81,7 +94,7 @@ export const NodeCreatorPanel: React.FC<NodeCreatorPanelProps> = ({ onClose }) =
 
   const createNode = async () => {
     try {
-      const response = await fetch('http://localhost:8000/node/add', {
+      const response = await fetch(`${API_BASE}/node/add`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -93,16 +106,17 @@ export const NodeCreatorPanel: React.FC<NodeCreatorPanelProps> = ({ onClose }) =
       });
 
       if (response.ok) {
-        const result = await response.json();
-        alert(`Node created successfully! ID: ${result.node_id}`);
+        const result: NodeResponsePayload = await response.json();
+        notify.success(result.message ?? `Node created successfully! ID: ${result.node_id}`);
+        onCreated?.(result);
         onClose();
       } else {
         const error = await response.text();
-        alert(`Failed to create node: ${error}`);
+        notify.error(`Failed to create node: ${error}`);
       }
     } catch (err) {
       console.error('Failed to create node:', err);
-      alert('Error creating node');
+      notify.error('Error creating node');
     }
   };
 
@@ -198,7 +212,7 @@ export const NodeCreatorPanel: React.FC<NodeCreatorPanelProps> = ({ onClose }) =
                 <div className="space-y-2 max-h-48 overflow-auto">
                   {Object.keys(parameters).length === 0 ? (
                     <div className="text-xs text-[#00cc77]/60 text-center py-4">
-                      No custom parameters. Click "Add Parameter" to define variables like A_max, R, T, etc.
+                      No custom parameters. Click &quot;Add Parameter&quot; to define variables like A_max, R, T, etc.
                     </div>
                   ) : (
                     Object.entries(parameters).map(([key, value]) => (
@@ -276,12 +290,22 @@ export const NodeCreatorPanel: React.FC<NodeCreatorPanelProps> = ({ onClose }) =
               <h3 className="text-sm font-semibold text-[#00ff99] uppercase tracking-wide">Algorithm Library</h3>
 
               {/* Category Filter */}
-              <div className="flex items-center gap-2 flex-wrap">
+              <div 
+                className="overflow-x-auto pb-2 custom-scrollbar"
+                onWheel={(e) => {
+                  // Enable horizontal scrolling with mouse wheel
+                  if (e.currentTarget.scrollWidth > e.currentTarget.clientWidth) {
+                    e.preventDefault();
+                    e.currentTarget.scrollLeft += e.deltaY;
+                  }
+                }}
+              >
+                <div className="flex items-center gap-2 min-w-max">
                 {['all', 'basic', 'audio', 'photonic'].map(cat => (
                   <button
                     key={cat}
                     onClick={() => setCategoryFilter(cat)}
-                    className={`px-3 py-1 text-xs rounded transition ${categoryFilter === cat
+                      className={`px-3 py-1 text-xs rounded transition whitespace-nowrap ${categoryFilter === cat
                       ? 'bg-[#00cc77] text-black'
                       : 'bg-[#1a1a1a] border border-[#00cc77] text-[#00ff99] hover:bg-[#00cc77]/20'
                       }`}
@@ -289,6 +313,7 @@ export const NodeCreatorPanel: React.FC<NodeCreatorPanelProps> = ({ onClose }) =
                     {cat.toUpperCase()}
                   </button>
                 ))}
+                </div>
               </div>
 
               {/* Algorithm Grid */}

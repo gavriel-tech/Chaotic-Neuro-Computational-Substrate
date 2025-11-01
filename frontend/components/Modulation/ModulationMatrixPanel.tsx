@@ -1,4 +1,5 @@
 'use client';
+import { notify } from '../UI/Notification';
 
 import React, { useState } from 'react';
 
@@ -49,15 +50,15 @@ export const ModulationMatrixPanel: React.FC<{ onClose: () => void }> = ({ onClo
       
       if (response.ok) {
         const data = await response.json();
-        alert(`Preset "${presetName}" loaded successfully!`);
+        notify.error(`Preset "${presetName}" loaded successfully!`);
         // Fetch updated routes from server
         fetchRoutes();
       } else {
-        alert(`Failed to load preset "${presetName}"`);
+        notify.error(`Failed to load preset "${presetName}"`);
       }
     } catch (err) {
       console.error('Failed to load preset:', err);
-      alert('Error loading preset');
+      notify.error('Error loading preset');
     }
   };
 

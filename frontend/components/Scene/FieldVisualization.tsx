@@ -24,7 +24,7 @@ export default function FieldVisualization() {
 
   const fieldTexture = useMemo(() => {
     const texture = new THREE.DataTexture(
-      field,
+      field as unknown as BufferSource,
       gridWidth,
       gridHeight,
       THREE.RedFormat,
@@ -77,7 +77,7 @@ export default function FieldVisualization() {
     if (!uniformsRef.current) return;
     const uniforms = uniformsRef.current;
     const texture: THREE.DataTexture = uniforms.fieldTexture.value;
-    texture.image.data = field;
+    (texture.image as any).data = field;
     texture.needsUpdate = true;
   }, [field]);
 

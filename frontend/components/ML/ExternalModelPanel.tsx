@@ -1,4 +1,5 @@
 'use client';
+import { notify } from '../UI/Notification';
 
 import React, { useState } from 'react';
 
@@ -23,7 +24,7 @@ export const ExternalModelPanel: React.FC<{ onClose: () => void }> = ({ onClose 
 
   const connectModel = async () => {
     if (!selectedFramework || !modelName.trim() || !modelPath.trim()) {
-      alert('Please fill in all fields');
+      notify.error('Please fill in all fields');
       return;
     }
 
@@ -47,7 +48,7 @@ export const ExternalModelPanel: React.FC<{ onClose: () => void }> = ({ onClose 
 
       if (response.ok) {
         setModels(prev => [...prev, newModel]);
-        alert(`${modelName} connected successfully and added to node library!`);
+        notify.error(`${modelName} connected successfully and added to node library!`);
         // Reset form
         setModelName('');
         setModelPath('');
@@ -56,12 +57,12 @@ export const ExternalModelPanel: React.FC<{ onClose: () => void }> = ({ onClose 
         setSelectedFramework(null);
         setShowAdd(false);
       } else {
-        alert('Failed to connect model');
+        notify.error('Failed to connect model');
       }
     } catch (err) {
       console.error('Failed to connect model:', err);
       setModels(prev => [...prev, newModel]);
-      alert(`${modelName} saved locally and added to node library!`);
+      notify.error(`${modelName} saved locally and added to node library!`);
       setModelName('');
       setModelPath('');
       setInputShape('');

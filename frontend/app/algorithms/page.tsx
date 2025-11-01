@@ -1,4 +1,5 @@
 'use client';
+import { notify } from '../UI/Notification';
 
 import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
@@ -71,9 +72,9 @@ export default function AlgorithmsPage() {
     : algorithms.filter(algo => algo.category === selectedCategory);
 
   const addAlgoParameter = () => {
-    const paramName = prompt('Parameter name (e.g., amplitude, frequency):');
+    const paramName = // prompt('Parameter name (e.g., amplitude, frequency):');
     if (paramName && paramName.trim()) {
-      const paramValue = prompt('Default value:');
+      const paramValue = // prompt('Default value:');
       setNewAlgoParams(prev => ({
         ...prev,
         [paramName.trim()]: paramValue || 0
@@ -89,12 +90,12 @@ export default function AlgorithmsPage() {
 
   const saveAlgorithm = async () => {
     if (!newAlgoName.trim()) {
-      alert('Please enter an algorithm name');
+      notify.error('Please enter an algorithm name');
       return;
     }
     
     if (!newAlgoCode.trim()) {
-      alert('Please enter the algorithm code');
+      notify.error('Please enter the algorithm code');
       return;
     }
 
@@ -112,7 +113,7 @@ export default function AlgorithmsPage() {
       });
 
       if (response.ok) {
-        alert('Algorithm created successfully!');
+        notify.error('Algorithm created successfully!');
         // Reset form
         setNewAlgoName('');
         setNewAlgoCategory('basic');
@@ -124,11 +125,11 @@ export default function AlgorithmsPage() {
         setActiveTab('browse');
       } else {
         const error = await response.text();
-        alert(`Failed to create algorithm: ${error}`);
+        notify.error(`Failed to create algorithm: ${error}`);
       }
     } catch (err) {
       console.error('Failed to create algorithm:', err);
-      alert('Error creating algorithm');
+      notify.error('Error creating algorithm');
     }
   };
 
